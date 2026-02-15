@@ -1,8 +1,6 @@
 package nbd
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -30,14 +28,6 @@ servers:
     flush: false
     fua: false
 {{end}}
-{{if .Tls}}
-  tls:
-    keyfile: {{.TempDir}}/server-key.pem
-    certfile: {{.TempDir}}/server-cert.pem
-    cacertfile: {{.TempDir}}/client-cert.pem
-    servername: localhost
-    clientauth: requireverify
-{{end}}
 logging:
 `
 
@@ -45,7 +35,6 @@ var longtests = flag.Bool("longtests", false, "enable long tests")
 var noFlush = flag.Bool("noflush", false, "Disable flush and FUA (for benchmarking - do not use in production")
 
 type TestConfig struct {
-	Tls     bool
 	TempDir string
 	Driver  string
 	NoFlush bool
@@ -57,7 +46,6 @@ type NbdInstance struct {
 	closed            bool
 	closedMutex       sync.Mutex
 	plainConn         net.Conn
-	tlsConn           net.Conn
 	conn              net.Conn
 	transmissionFlags uint16
 	TestConfig
@@ -80,19 +68,6 @@ func StartNbd(t *testing.T, tc TestConfig) *NbdInstance {
 		t.Fatalf("Could not create test directory: %v", err)
 	} else {
 		ni.TempDir = TempDir
-	}
-
-	if err := ioutil.WriteFile(path.Join(ni.TempDir, "server-key.pem"), []byte(testServerKey), 0644); err != nil {
-		t.Fatalf("Could not write server key")
-	}
-	if err := ioutil.WriteFile(path.Join(ni.TempDir, "server-cert.pem"), []byte(testServerCert), 0644); err != nil {
-		t.Fatalf("Could not write server cert")
-	}
-	if err := ioutil.WriteFile(path.Join(ni.TempDir, "client-key.pem"), []byte(testClientKey), 0644); err != nil {
-		t.Fatalf("Could not write client key")
-	}
-	if err := ioutil.WriteFile(path.Join(ni.TempDir, "client-cert.pem"), []byte(testClientCert), 0644); err != nil {
-		t.Fatalf("Could not write client key")
 	}
 
 	confFile := path.Join(ni.TempDir, "gonbdserver.conf")
@@ -137,10 +112,6 @@ func (ni *NbdInstance) CloseConnection() {
 		ni.plainConn.Close()
 		ni.plainConn = nil
 	}
-	if ni.tlsConn != nil {
-		ni.tlsConn.Close()
-		ni.tlsConn = nil
-	}
 	close(ni.quit)
 	ni.closed = true
 }
@@ -149,36 +120,6 @@ func (ni *NbdInstance) Close() {
 	ni.CloseConnection()
 	time.Sleep(100 * time.Millisecond)
 	os.RemoveAll(ni.TempDir)
-}
-
-// make an appropriate TLS config
-func (ni *NbdInstance) getTlsConfig(t *testing.T) (*tls.Config, error) {
-	keyFile := path.Join(ni.TempDir, "client-key.pem")
-	certFile := path.Join(ni.TempDir, "client-cert.pem")
-	caFile := path.Join(ni.TempDir, "server-cert.pem")
-
-	// Load client cert
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, err
-	}
-
-	// Load CA cert
-	caCert, err := ioutil.ReadFile(caFile)
-	if err != nil {
-		return nil, err
-	}
-	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(caCert)
-
-	// Setup HTTPS client
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      caCertPool,
-		ServerName:   "localhost",
-	}
-	tlsConfig.BuildNameToCertificate()
-	return tlsConfig, nil
 }
 
 func (ni *NbdInstance) Connect(t *testing.T) error {
@@ -217,50 +158,6 @@ func (ni *NbdInstance) Connect(t *testing.T) error {
 	}
 
 	t.Logf("Connected")
-
-	if ni.Tls {
-		tlsOpt := nbdClientOpt{
-			NbdOptMagic: NBD_OPTS_MAGIC,
-			NbdOptId:    NBD_OPT_STARTTLS,
-			NbdOptLen:   0,
-		}
-		if err = binary.Write(ni.conn, binary.BigEndian, tlsOpt); err != nil {
-			return fmt.Errorf("Could not send start tls option")
-		}
-		var tlsOptReply nbdOptReply
-		if err := binary.Read(ni.conn, binary.BigEndian, &tlsOptReply); err != nil {
-			return fmt.Errorf("Could not receive Tls option reply")
-		}
-		if tlsOptReply.NbdOptReplyMagic != NBD_REP_MAGIC {
-			return fmt.Errorf("Tls option reply had wrong magic (%x)", tlsOptReply.NbdOptReplyMagic)
-		}
-		if tlsOptReply.NbdOptId != NBD_OPT_STARTTLS {
-			return fmt.Errorf("Tls option reply had wrong id")
-		}
-		if tlsOptReply.NbdOptReplyType != NBD_REP_ACK {
-			return fmt.Errorf("Tls option reply had wrong reply type")
-		}
-		if tlsOptReply.NbdOptReplyLength != 0 {
-			return fmt.Errorf("Tls option reply had bogus length")
-		}
-
-		tlsConfig, err := ni.getTlsConfig(t)
-		if err != nil {
-			return fmt.Errorf("Could not get TLS config: %v", err)
-		}
-
-		tls := tls.Client(ni.conn, tlsConfig)
-		ni.tlsConn = tls
-		ni.conn = tls
-		ni.plainConn.SetDeadline(time.Time{})
-		ni.conn.SetDeadline(time.Now().Add(time.Second))
-
-		// explicitly handshake so we get an error here if there is an issue
-		if err := tls.Handshake(); err != nil {
-			fmt.Println("oops", err)
-			return fmt.Errorf("TLS handshake failed: %s", err)
-		}
-	}
 
 	listOpt := nbdClientOpt{
 		NbdOptMagic: NBD_OPTS_MAGIC,
@@ -459,8 +356,8 @@ func (ni *NbdInstance) Disconnect(t *testing.T) error {
 	return nil
 }
 
-func doTestConnection(t *testing.T, tls bool) {
-	ni := StartNbd(t, TestConfig{Tls: tls, NoFlush: *noFlush})
+func doTestConnection(t *testing.T) {
+	ni := StartNbd(t, TestConfig{NoFlush: *noFlush})
 	defer ni.Close()
 
 	if err := ni.Connect(t); err != nil {
@@ -476,19 +373,15 @@ func doTestConnection(t *testing.T, tls bool) {
 }
 
 func TestConnection(t *testing.T) {
-	doTestConnection(t, false)
+	doTestConnection(t)
 }
 
-func TestConnectionTls(t *testing.T) {
-	doTestConnection(t, true)
-}
-
-func doTestConnectionIntegrity(t *testing.T, transationLog []byte, tls bool, driver string) {
+func doTestConnectionIntegrity(t *testing.T, transationLog []byte, driver string) {
 	if _, ok := BackendMap[driver]; !ok {
 		t.Skip(fmt.Sprintf("Skipping test as driver %s not built", driver))
 		return
 	}
-	ni := StartNbd(t, TestConfig{Tls: tls, Driver: driver, NoFlush: *noFlush})
+	ni := StartNbd(t, TestConfig{Driver: driver, NoFlush: *noFlush})
 	defer ni.Close()
 
 	if err := ni.CreateFile(t, 50*1024*1024); err != nil {
@@ -520,25 +413,13 @@ func doTestConnectionIntegrity(t *testing.T, transationLog []byte, tls bool, dri
 }
 
 func TestConnectionIntegrity(t *testing.T) {
-	doTestConnectionIntegrity(t, []byte(testTransactionLog), false, "file")
-}
-
-func TestConnectionIntegrityTls(t *testing.T) {
-	doTestConnectionIntegrity(t, []byte(testTransactionLog), true, "file")
+	doTestConnectionIntegrity(t, []byte(testTransactionLog), "file")
 }
 
 func TestConnectionIntegrityHuge(t *testing.T) {
 	if !*longtests {
 		t.Skip("Skipping this test as long tests not enabled (use -longtests to enable)")
 	} else {
-		doTestConnectionIntegrity(t, []byte(testHugeTransactionLog), false, "file")
-	}
-}
-
-func TestConnectionIntegrityHugeTls(t *testing.T) {
-	if !*longtests {
-		t.Skip("Skipping this test as long tests not enabled (use -longtests to enable)")
-	} else {
-		doTestConnectionIntegrity(t, []byte(testHugeTransactionLog), true, "file")
+		doTestConnectionIntegrity(t, []byte(testHugeTransactionLog), "file")
 	}
 }

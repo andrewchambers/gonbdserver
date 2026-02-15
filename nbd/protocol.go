@@ -66,7 +66,6 @@ const (
 	NBD_OPT_ABORT            = 2
 	NBD_OPT_LIST             = 3
 	NBD_OPT_PEEK_EXPORT      = 4
-	NBD_OPT_STARTTLS         = 5
 	NBD_OPT_INFO             = 6
 	NBD_OPT_GO               = 7
 	NBD_OPT_STRUCTURED_REPLY = 8
@@ -82,7 +81,6 @@ const (
 	NBD_REP_ERR_POLICY          = uint32(2 | NBD_REP_FLAG_ERROR)
 	NBD_REP_ERR_INVALID         = uint32(3 | NBD_REP_FLAG_ERROR)
 	NBD_REP_ERR_PLATFORM        = uint32(4 | NBD_REP_FLAG_ERROR)
-	NBD_REP_ERR_TLS_REQD        = uint32(5 | NBD_REP_FLAG_ERROR)
 	NBD_REP_ERR_UNKNOWN         = uint32(6 | NBD_REP_FLAG_ERROR)
 	NBD_REP_ERR_SHUTDOWN        = uint32(7 | NBD_REP_FLAG_ERROR)
 	NBD_REP_ERR_BLOCK_SIZE_REQD = uint32(8 | NBD_REP_FLAG_ERROR)

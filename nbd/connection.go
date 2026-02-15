@@ -1,7 +1,6 @@
 package nbd
 
 import (
-	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -19,23 +18,6 @@ import (
 // Default number of workers
 var DefaultWorkers = 5
 
-// Map of configuration text to TLS versions
-var tlsVersionMap = map[string]uint16{
-	"ssl3.0": tls.VersionSSL30,
-	"tls1.0": tls.VersionTLS10,
-	"tls1.1": tls.VersionTLS11,
-	"tls1.2": tls.VersionTLS12,
-}
-
-// Map of configuration text to TLS authentication strategies
-var tlsClientAuthMap = map[string]tls.ClientAuthType{
-	"none":          tls.NoClientCert,
-	"request":       tls.RequestClientCert,
-	"require":       tls.RequireAnyClientCert,
-	"verify":        tls.VerifyClientCertIfGiven,
-	"requireverify": tls.RequireAndVerifyClientCert,
-}
-
 // ConnectionParameters holds parameters for each inbound connection
 type ConnectionParameters struct {
 	ConnectionTimeout time.Duration // maximum time to complete negotiation
@@ -46,7 +28,6 @@ type Connection struct {
 	params             *ConnectionParameters // parameters
 	conn               net.Conn              // the connection that is used as the NBD transport
 	plainConn          net.Conn              // the unencrypted (original) connection
-	tlsConn            net.Conn              // the TLS encrypted connection
 	logger             *log.Logger           // a logger
 	listener           *Listener             // the listener than invoked us
 	export             *Export               // a pointer to the export
@@ -96,7 +77,6 @@ type Export struct {
 	description        string // description of the export
 	readonly           bool   // true if read only
 	workers            int    // number of workers
-	tlsonly            bool   // true if only to be served over tls
 }
 
 // Request is an internal structure for propagating requests through the channels
@@ -614,9 +594,6 @@ func (c *Connection) Serve(parentCtx context.Context) {
 		if c.backend != nil {
 			c.backend.Close(ctx)
 		}
-		if c.tlsConn != nil {
-			c.tlsConn.Close()
-		}
 		c.plainConn.Close()
 		cancelFunc()
 		c.Kill(ctx) // to ensure the kill channel is closed
@@ -795,22 +772,16 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 
 			// Next find our export
 			ec, err := c.getExportConfig(ctx, string(name))
-			if err != nil || (ec.TlsOnly && c.tlsConn == nil) {
+			if err != nil {
 				if opt.NbdOptId == NBD_OPT_EXPORT_NAME {
 					// we have to just abort here
-					if err != nil {
-						return err
-					}
-					return errors.New("Attempt to connect to TLS-only connection without TLS")
+					return err
 				}
 				or := nbdOptReply{
 					NbdOptReplyMagic:  NBD_REP_MAGIC,
 					NbdOptId:          opt.NbdOptId,
 					NbdOptReplyType:   NBD_REP_ERR_UNKNOWN,
 					NbdOptReplyLength: 0,
-				}
-				if err == nil {
-					or.NbdOptReplyType = NBD_REP_ERR_TLS_REQD
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
 					return errors.New("Cannot send info error")
@@ -989,42 +960,6 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 			if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
 				return errors.New("Cannot send list ack")
 			}
-		case NBD_OPT_STARTTLS:
-			if c.listener.tlsconfig == nil || c.tlsConn != nil {
-				// say it's unsuppported
-				c.logger.Printf("[INFO] Rejecting upgrade of connection with %s to TLS", c.name)
-				or := nbdOptReply{
-					NbdOptReplyMagic:  NBD_REP_MAGIC,
-					NbdOptId:          opt.NbdOptId,
-					NbdOptReplyType:   NBD_REP_ERR_UNSUP,
-					NbdOptReplyLength: 0,
-				}
-				if c.tlsConn != nil { // TLS is already negotiated
-					or.NbdOptReplyType = NBD_REP_ERR_INVALID
-				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot reply to unsupported TLS option")
-				}
-			} else {
-				or := nbdOptReply{
-					NbdOptReplyMagic:  NBD_REP_MAGIC,
-					NbdOptId:          opt.NbdOptId,
-					NbdOptReplyType:   NBD_REP_ACK,
-					NbdOptReplyLength: 0,
-				}
-				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot send TLS ack")
-				}
-				c.logger.Printf("[INFO] Upgrading connection with %s to TLS", c.name)
-				// switch over to TLS
-				tls := tls.Server(c.conn, c.listener.tlsconfig)
-				c.tlsConn = tls
-				c.conn = tls
-				// explicitly handshake so we get an error here if there is an issue
-				if err := tls.Handshake(); err != nil {
-					return fmt.Errorf("TLS handshake failed: %s", err)
-				}
-			}
 		case NBD_OPT_ABORT:
 			or := nbdOptReply{
 				NbdOptReplyMagic:  NBD_REP_MAGIC,
@@ -1143,7 +1078,6 @@ func (c *Connection) connectExport(ctx context.Context, ec *ExportConfig) (*Expo
 				name:               ec.Name,
 				readonly:           ec.ReadOnly,
 				workers:            ec.Workers,
-				tlsonly:            ec.TlsOnly,
 				description:        ec.Description,
 				minimumBlockSize:   minimumBlockSize,
 				preferredBlockSize: preferredBlockSize,

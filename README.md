@@ -12,8 +12,6 @@ Features
 
 * **Multithreaded**. Defaults to 5 worker threads per connection, so able to
   process requests in parallel.
-  
-* **TLS support**. With client certificates if required.
 
 * **Pluggable backends**. By default a file backend is provided, but it would be
   possible to supply any backend.
@@ -92,13 +90,6 @@ servers:
     readonly: true               # This is readonly
     driver: file                 # And uses the file driver
     path: /tmp/bar               # on this file
-    tlsonly: true                # require TLS on this device
-  tls:                           # use the following certificates
-    keyfile: /path/to/server-key.pem
-    certfile: /path/to/server-cert.pem
-    cacertfile: /path/to/ca-cert.pem
-    servername: foo.example.com  # present the server name as 'foo.example.com'
-    clientauth: requireverify    # require and verify client certificates
 - protocol: unix                 # Another server uses UNIX
   address: /var/run/nbd.sock     # served on this socket
   exports:                       # it has one export
@@ -128,7 +119,6 @@ Each `server` item consists of the following:
 * `address:` the address to listen on. For TCP protocols, this takes the form `address:port` in the normal manner. For UNIX protocols, this is the path to a Unix domain socket. Mandatory.
 * `exports:` a list of zero or more `export` items each representing an export to be served by this server. This section is optional (and can be empty), but the server will be of little use if so.
 * `defaultexport:` the name of the default export, which should be selected if no name is specified by the client. Optional, defaults to none.
-* `tls:` a TLS item
 * `disablenozeroes:`: disable `NBD_FLAG_NO_ZEROES` for back compatibility with nbd client prior to 3.10, where in error this was sent to the kernel as a 'read-only' flag. Optional, defaults to false.
 
 #### `export` items
@@ -141,7 +131,6 @@ Each `export` item consists of the following (common to all drivers):
 * `driver:` the driver. Currently valid drivers are: `file`. Mandatory.
 * `readonly:` set to `true` for readonly, `false` otherwise. Optional, defaults to `false`.
 * `workers:` the number of simultaneous worker threads. Optional, defaults to 5.
-* `tlsonly:` set to `true` if the export is only to be provided over TLS, `false` otherwise. Optional, defaults to `false`
 * `minimumblocksize:` set to the minimum block size (must be a power of two). Optional, defaults to driver's minimum block size
 * `preferredblocksize:` set to the preferred block size (must be a power of two). Optional, defaults to driver's preferred block size
 * `maximumblocksize:` set to the maximum block size (must be a multiple of preferredblocksize). Optional, defaults to driver's maximum block size
@@ -152,18 +141,6 @@ The `file` driver reads the disk from a file on the host OS's disks. It has the 
 
 * `path:` path to the file. Mandatory.
 * `sync:` set to `true` to open the file with `O_SYNC`, else to `false`. Optional, defaults to `false`.
-
-#### `tls` item
-
-The `tls` item is used to enable TLS encryption on a server. If TLS is enabled on a server, the exports will be available over TLS. To make individual exports available *only* over TLS, add `tlsonly: true` to the export
-
-* `keyfile:` Path to TLS key file in PEM format. Mandatory.
-* `certfile:` Path to TLS cert file in PEM format. Optional, if not provided, defaults to `KeyFile` and assumes the PEM at `keyfile` has the certificate in as well as the private key.
-* `servername:` Server name as announced by TLS. Optional, if not provided defaults to host name.
-* `cacertfile:` Path to a file containing one or more CA certificates in PEM format. Optional, but required if validating client certificates
-* `clientauth:` Client authentication strategy. Optional, defaulting to `none`. Must be one of the following values: `none` (no client certificate is requested or verified), `request` (a client certificate is requested but not verified), `require` (a client certificate is requested and required, but not verified), `verify` (a client certificate is requested and if provided is verified), or `requireverify` (a client certificate is requested and required, then verified)
-* `minversion:` minimum TLS version. Optional, defaults to no minimum version. Must be one of the following values: `ssl3.0`, `tls1.0`, `tls1.1` or `tls1.2`.
-* `maxversion:` maximum TLS version. Optional, defaults to no maximum version. Must be one of the following values: `ssl3.0`, `tls1.0`, `tls1.1` or `tls1.2`.
 
 #### `logging` item
 

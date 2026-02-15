@@ -78,7 +78,6 @@ type ServerConfig struct {
 	Address         string         // address to listen on
 	DefaultExport   string         // name of default export
 	Exports         []ExportConfig // array of configurations of exported items
-	Tls             TlsConfig      // TLS configuration
 	DisableNoZeroes bool           // Disable NoZereos extension
 }
 
@@ -89,22 +88,10 @@ type ExportConfig struct {
 	Driver             string                 // name of the driver
 	ReadOnly           bool                   // true of the export should be opened readonly
 	Workers            int                    // number of concurrent workers
-	TlsOnly            bool                   // true if the export should only be served over TLS
 	MinimumBlockSize   uint64                 // minimum block size
 	PreferredBlockSize uint64                 // preferred block size
 	MaximumBlockSize   uint64                 // maximum block size
 	DriverParameters   DriverParametersConfig `yaml:",inline"` // driver parameters. These are an arbitrary map. Inline means they go aside teh foregoing
-}
-
-// TlsConfig has the configuration for TLS
-type TlsConfig struct {
-	KeyFile    string // path to TLS key file
-	CertFile   string // path to TLS cert file
-	ServerName string // server name
-	CaCertFile string // path to certificate file
-	ClientAuth string // client authentication strategy
-	MinVersion string // minimum TLS version
-	MaxVersion string // maximum TLS version
 }
 
 // DriverConfig is an arbitrary map of other parameters in string format
