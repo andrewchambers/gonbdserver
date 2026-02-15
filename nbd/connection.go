@@ -1,14 +1,13 @@
 package nbd
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"golang.org/x/net/context"
 	"io"
 	"log"
 	"net"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,7 +28,7 @@ type Connection struct {
 	conn               net.Conn              // the connection that is used as the NBD transport
 	plainConn          net.Conn              // the unencrypted (original) connection
 	logger             *log.Logger           // a logger
-	listener           *Listener             // the listener than invoked us
+	listener           *listener             // the listener that invoked us
 	export             *Export               // a pointer to the export
 	backend            Backend               // the backend implementation
 	wg                 sync.WaitGroup        // a waitgroup for the session; we mark this as done on exit
@@ -62,9 +61,6 @@ type Backend interface {
 	HasFlush(ctx context.Context) bool                                          // does the driver support flush?
 }
 
-// BackendMap is a map between backends and the generator function for them
-var BackendMap map[string]func(ctx context.Context, e *ExportConfig) (Backend, error) = make(map[string]func(ctx context.Context, e *ExportConfig) (Backend, error))
-
 // Details of an export
 type Export struct {
 	size               uint64 // size in bytes
@@ -91,10 +87,12 @@ type Request struct {
 }
 
 // newConection returns a new Connection object
-func newConnection(listener *Listener, logger *log.Logger, conn net.Conn) (*Connection, error) {
-	params := &ConnectionParameters{
-		ConnectionTimeout: time.Second * 5,
+func newConnection(listener *listener, logger *log.Logger, conn net.Conn) (*Connection, error) {
+	timeout := listener.connectionTimeout
+	if timeout <= 0 {
+		timeout = defaultConnectionTimeout
 	}
+	params := &ConnectionParameters{ConnectionTimeout: timeout}
 	c := &Connection{
 		plainConn: conn,
 		listener:  listener,
@@ -994,13 +992,14 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 }
 
 // getExport generates an export for a given name
-func (c *Connection) getExportConfig(ctx context.Context, name string) (*ExportConfig, error) {
-	for _, ec := range c.listener.exports {
-		if ec.Name == name {
-			return &ec, nil
+func (c *Connection) getExportConfig(ctx context.Context, name string) (*ExportOptions, error) {
+	_ = ctx
+	for i := range c.listener.exports {
+		if c.listener.exports[i].Name == name {
+			return &c.listener.exports[i], nil
 		}
 	}
-	return nil, errors.New("No such export")
+	return nil, errors.New("no such export")
 }
 
 // round a uint64 up to the next power of two
@@ -1016,89 +1015,74 @@ func roundUpToNextPowerOfTwo(x uint64) uint64 {
 }
 
 // connectExport generates an export for a given name, and connects to it using the chosen backend
-func (c *Connection) connectExport(ctx context.Context, ec *ExportConfig) (*Export, error) {
-	forceFlush, forceNoFlush, err := isTrueFalse(ec.DriverParameters["flush"])
+func (c *Connection) connectExport(ctx context.Context, ec *ExportOptions) (*Export, error) {
+	if ec.OpenBackend == nil {
+		return nil, fmt.Errorf("export %q has no backend", ec.Name)
+	}
+
+	backend, err := ec.OpenBackend(ctx, ec)
 	if err != nil {
 		return nil, err
 	}
-	forceFua, forceNoFua, err := isTrueFalse(ec.DriverParameters["fua"])
+
+	size, minimumBlockSize, preferredBlockSize, maximumBlockSize, err := backend.Geometry(ctx)
 	if err != nil {
+		_ = backend.Close(ctx)
 		return nil, err
 	}
-	if backendgen, ok := BackendMap[strings.ToLower(ec.Driver)]; !ok {
-		return nil, fmt.Errorf("No such driver %s", ec.Driver)
-	} else {
-		if backend, err := backendgen(ctx, ec); err != nil {
-			return nil, err
-		} else {
-			size, minimumBlockSize, preferredBlockSize, maximumBlockSize, err := backend.Geometry(ctx)
-			if err != nil {
-				backend.Close(ctx)
-				return nil, err
-			}
-			if c.backend != nil {
-				c.backend.Close(ctx)
-			}
-			c.backend = backend
-			if ec.MinimumBlockSize != 0 {
-				minimumBlockSize = ec.MinimumBlockSize
-			}
-			if ec.PreferredBlockSize != 0 {
-				preferredBlockSize = ec.PreferredBlockSize
-			}
-			if ec.MaximumBlockSize != 0 {
-				maximumBlockSize = ec.MaximumBlockSize
-			}
-			if minimumBlockSize == 0 {
-				minimumBlockSize = 1
-			}
-			minimumBlockSize = roundUpToNextPowerOfTwo(minimumBlockSize)
-			preferredBlockSize = roundUpToNextPowerOfTwo(preferredBlockSize)
-			// ensure preferredBlockSize is a multiple of the minimum block size
-			preferredBlockSize = preferredBlockSize & ^(minimumBlockSize - 1)
-			if preferredBlockSize < minimumBlockSize {
-				preferredBlockSize = minimumBlockSize
-			}
-			// ensure maximumBlockSize is a multiple of preferredBlockSize
-			maximumBlockSize = maximumBlockSize & ^(preferredBlockSize - 1)
-			if maximumBlockSize < preferredBlockSize {
-				maximumBlockSize = preferredBlockSize
-			}
-			flags := uint16(NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_WRITE_ZEROES | NBD_FLAG_SEND_CLOSE)
-			if (backend.HasFua(ctx) || forceFua) && !forceNoFua {
-				flags |= NBD_FLAG_SEND_FUA
-			}
-			if (backend.HasFlush(ctx) || forceFlush) && !forceNoFlush {
-				flags |= NBD_FLAG_SEND_FLUSH
-			}
-			size = size & ^(minimumBlockSize - 1)
-			return &Export{
-				size:               size,
-				exportFlags:        flags,
-				name:               ec.Name,
-				readonly:           ec.ReadOnly,
-				workers:            ec.Workers,
-				description:        ec.Description,
-				minimumBlockSize:   minimumBlockSize,
-				preferredBlockSize: preferredBlockSize,
-				maximumBlockSize:   maximumBlockSize,
-				memoryBlockSize:    preferredBlockSize,
-			}, nil
-		}
-	}
-}
 
-func RegisterBackend(name string, generator func(ctx context.Context, e *ExportConfig) (Backend, error)) {
-	BackendMap[name] = generator
-}
-
-func GetBackendNames() []string {
-	b := make([]string, len(BackendMap))
-	i := 0
-	for k, _ := range BackendMap {
-		b[i] = k
-		i++
+	if c.backend != nil {
+		_ = c.backend.Close(ctx)
 	}
-	sort.Strings(b)
-	return b
+	c.backend = backend
+
+	if ec.MinimumBlockSize != 0 {
+		minimumBlockSize = ec.MinimumBlockSize
+	}
+	if ec.PreferredBlockSize != 0 {
+		preferredBlockSize = ec.PreferredBlockSize
+	}
+	if ec.MaximumBlockSize != 0 {
+		maximumBlockSize = ec.MaximumBlockSize
+	}
+	if minimumBlockSize == 0 {
+		minimumBlockSize = 1
+	}
+	minimumBlockSize = roundUpToNextPowerOfTwo(minimumBlockSize)
+	preferredBlockSize = roundUpToNextPowerOfTwo(preferredBlockSize)
+	// ensure preferredBlockSize is a multiple of the minimum block size
+	preferredBlockSize = preferredBlockSize & ^(minimumBlockSize - 1)
+	if preferredBlockSize < minimumBlockSize {
+		preferredBlockSize = minimumBlockSize
+	}
+	// ensure maximumBlockSize is a multiple of preferredBlockSize
+	maximumBlockSize = maximumBlockSize & ^(preferredBlockSize - 1)
+	if maximumBlockSize < preferredBlockSize {
+		maximumBlockSize = preferredBlockSize
+	}
+
+	flags := uint16(NBD_FLAG_HAS_FLAGS | NBD_FLAG_SEND_WRITE_ZEROES | NBD_FLAG_SEND_CLOSE)
+	if ec.ReadOnly {
+		flags |= NBD_FLAG_READ_ONLY
+	}
+	if backend.HasFua(ctx) {
+		flags |= NBD_FLAG_SEND_FUA
+	}
+	if backend.HasFlush(ctx) {
+		flags |= NBD_FLAG_SEND_FLUSH
+	}
+
+	size = size & ^(minimumBlockSize - 1)
+	return &Export{
+		size:               size,
+		exportFlags:        flags,
+		name:               ec.Name,
+		readonly:           ec.ReadOnly,
+		workers:            ec.Workers,
+		description:        ec.Description,
+		minimumBlockSize:   minimumBlockSize,
+		preferredBlockSize: preferredBlockSize,
+		maximumBlockSize:   maximumBlockSize,
+		memoryBlockSize:    preferredBlockSize,
+	}, nil
 }

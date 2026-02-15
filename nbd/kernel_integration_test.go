@@ -182,7 +182,7 @@ func setupKernelTestFS(t *testing.T, sizeBytes int64) *kernelTestFS {
 	chown := lookPathOrSkip(t, "chown")
 
 	// Start server (removed as part of cleanup).
-	fs.ni = StartNbd(t, TestConfig{Driver: "file"})
+	fs.ni = StartNbd(t, TestConfig{})
 
 	if err := fs.ni.CreateFile(t, sizeBytes); err != nil {
 		t.Fatalf("CreateFile: %v", err)

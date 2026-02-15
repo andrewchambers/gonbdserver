@@ -1,7 +1,7 @@
 package nbd
 
 import (
-	"golang.org/x/net/context"
+	"context"
 	"os"
 )
 
@@ -59,33 +59,33 @@ func (fb *FileBackend) HasFlush(ctx context.Context) bool {
 	return true
 }
 
-// Generate a new file backend
-func NewFileBackend(ctx context.Context, ec *ExportConfig) (Backend, error) {
-	perms := os.O_RDWR
-	if ec.ReadOnly {
-		perms = os.O_RDONLY
-	}
-	if s, err := isTrue(ec.DriverParameters["sync"]); err != nil {
-		return nil, err
-	} else if s {
-		perms |= os.O_SYNC
-	}
-	file, err := os.OpenFile(ec.DriverParameters["path"], perms, 0666)
-	if err != nil {
-		return nil, err
-	}
-	stat, err := file.Stat()
-	if err != nil {
-		file.Close()
-		return nil, err
-	}
-	return &FileBackend{
-		file: file,
-		size: uint64(stat.Size()),
-	}, nil
+type FileBackendOptions struct {
+	Path string
+	Sync bool
 }
 
-// Register our backend
-func init() {
-	RegisterBackend("file", NewFileBackend)
+// OpenFileBackend returns a BackendFactory that serves a host file.
+func OpenFileBackend(opts FileBackendOptions) BackendFactory {
+	return func(ctx context.Context, export *ExportOptions) (Backend, error) {
+		perms := os.O_RDWR
+		if export.ReadOnly {
+			perms = os.O_RDONLY
+		}
+		if opts.Sync {
+			perms |= os.O_SYNC
+		}
+		file, err := os.OpenFile(opts.Path, perms, 0o666)
+		if err != nil {
+			return nil, err
+		}
+		stat, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		return &FileBackend{
+			file: file,
+			size: uint64(stat.Size()),
+		}, nil
+	}
 }

@@ -4,49 +4,37 @@
 package nbd
 
 import (
-	"flag"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
-	"text/template"
 	"time"
 )
 
-const integrationConfigTemplate = `
-servers:
-- protocol: unix
-  address: {{.TempDir}}/nbd.sock
-  exports:
-  - name: foo
-    driver: {{.Driver}}
-    path: {{.TempDir}}/nbd.img
-logging:
-`
-
 type TestConfig struct {
 	TempDir string
-	Driver  string
 }
 
 type NbdInstance struct {
 	t           *testing.T
-	quit        chan struct{}
+	cancel      context.CancelFunc
+	done        chan struct{}
+	serveErrCh  chan error
 	closed      bool
 	closedMutex sync.Mutex
+	srv         *Server
 	TestConfig
 }
 
 func StartNbd(t *testing.T, tc TestConfig) *NbdInstance {
 	t.Helper()
 
-	if tc.Driver == "" {
-		tc.Driver = "file"
-	}
-
 	ni := &NbdInstance{
 		t:          t,
-		quit:       make(chan struct{}),
+		done:       make(chan struct{}),
+		serveErrCh: make(chan error, 1),
 		TestConfig: tc,
 	}
 
@@ -56,33 +44,57 @@ func StartNbd(t *testing.T, tc TestConfig) *NbdInstance {
 	}
 	ni.TempDir = tempDir
 
-	confFile := filepath.Join(ni.TempDir, "gonbdserver.conf")
-	tpl := template.Must(template.New("config").Parse(integrationConfigTemplate))
-	cf, err := os.Create(confFile)
+	sock := filepath.Join(ni.TempDir, "nbd.sock")
+	img := filepath.Join(ni.TempDir, "nbd.img")
+
+	srv, err := NewServer(Options{
+		Listeners: []ListenerOptions{
+			{
+				Network: "unix",
+				Address: sock,
+				Exports: []ExportOptions{
+					{
+						Name:        "foo",
+						OpenBackend: OpenFileBackend(FileBackendOptions{Path: img}),
+						Workers:     20,
+					},
+				},
+			},
+		},
+	})
 	if err != nil {
-		t.Fatalf("creating config file: %v", err)
+		t.Fatalf("NewServer: %v", err)
 	}
-	if err := tpl.Execute(cf, ni.TestConfig); err != nil {
-		cf.Close()
-		t.Fatalf("executing config template: %v", err)
-	}
-	if err := cf.Close(); err != nil {
-		t.Fatalf("closing config file: %v", err)
-	}
+	ni.srv = srv
 
-	oldArgs := os.Args
-	os.Args = []string{
-		"gonbdserver",
-		"-f",
-		"-c",
-		confFile,
-	}
-	flag.Parse()
-	os.Args = oldArgs
+	ctx, cancel := context.WithCancel(context.Background())
+	ni.cancel = cancel
+	go func() {
+		defer close(ni.done)
+		ni.serveErrCh <- ni.srv.Serve(ctx)
+	}()
 
-	control := &Control{quit: ni.quit}
-	go Run(control)
-	time.Sleep(100 * time.Millisecond)
+	// Catch immediate listen failures with a clear error, instead of timing out later.
+	deadline := time.Now().Add(2 * time.Second)
+	ready := false
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-ni.serveErrCh:
+			if err == nil || errors.Is(err, context.Canceled) {
+				t.Fatalf("server exited unexpectedly: %v", err)
+			}
+			t.Fatalf("server exited: %v", err)
+		default:
+		}
+		if _, err := os.Stat(sock); err == nil {
+			ready = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatalf("timed out waiting for unix socket %q", sock)
+	}
 
 	return ni
 }
@@ -93,13 +105,22 @@ func (ni *NbdInstance) CloseConnection() {
 	if ni.closed {
 		return
 	}
-	close(ni.quit)
+	if ni.cancel != nil {
+		ni.cancel()
+	}
+	if ni.srv != nil {
+		_ = ni.srv.Close()
+	}
 	ni.closed = true
 }
 
 func (ni *NbdInstance) Close() {
 	ni.CloseConnection()
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-ni.done:
+	case <-time.After(2 * time.Second):
+		ni.t.Logf("timeout waiting for server shutdown")
+	}
 	_ = os.RemoveAll(ni.TempDir)
 }
 
