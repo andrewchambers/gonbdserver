@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -118,7 +117,7 @@ func NbdError(err error) uint32 {
 // they only arise as we ourselves close the connection to get blocking reads/writes to safely terminate, and thus do
 // not want to report them to the user as an error
 func isClosedErr(err error) bool {
-	return strings.HasSuffix(err.Error(), "use of closed network connection") // YUCK!
+	return err != nil && errors.Is(err, net.ErrClosed)
 }
 
 // Kill kills a connection. This safely ensures the kill channel is closed if it isn't already, which will
