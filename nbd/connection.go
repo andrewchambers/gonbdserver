@@ -462,7 +462,7 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 					addr += blocklen
 					length -= blocklen
 				}
-			case NBD_CMD_WRITE, NBD_CMD_WRITE_ZEROES:
+			case NBD_CMD_WRITE, NBD_CMD_WRITE_ZEROES, NBD_CMD_WRITE_ZEROES_LEGACY:
 				for i := 0; length > 0; i++ {
 					blocklen := c.export.memoryBlockSize
 					if blocklen > length {

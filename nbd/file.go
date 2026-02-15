@@ -36,7 +36,7 @@ func (fb *FileBackend) TrimAt(ctx context.Context, length int, offset int64) (in
 
 // Flush implements Backend.Flush
 func (fb *FileBackend) Flush(ctx context.Context) error {
-	return nil
+	return fb.file.Sync()
 }
 
 // Close implements Backend.Close
