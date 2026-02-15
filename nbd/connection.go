@@ -34,8 +34,8 @@ type Connection struct {
 	rxCh               chan Request          // a channel of requests that have been received, and need to be dispatched to a worker
 	txCh               chan Request          // a channel of outputs from the worker. By this time they have replies in that need to be transmitted
 	name               string                // the name of the connection for logging purposes
-	disconnectReceived int64                 // nonzero if disconnect has been received
-	numInflight        int64                 // number of inflight requests
+	disconnectReceived atomic.Bool           // set once a disconnect/close request has been received
+	numInflight        atomic.Int64          // number of inflight requests
 
 	memBlockCh         chan []byte // channel of memory blocks that are free
 	memBlocksMaximum   int64       // maximum blocks that may be allocated
@@ -300,7 +300,7 @@ func (c *Connection) Receive(ctx context.Context) {
 			// we process this here as commands may otherwise be processed out
 			// of order and per the spec we should not receive any more
 			// commands after receiving a disconnect
-			atomic.StoreInt64(&c.disconnectReceived, 1)
+			c.disconnectReceived.Store(true)
 		}
 
 		if req.flags&CMDT_CHECK_LENGTH_OFFSET != 0 {
@@ -371,7 +371,7 @@ func (c *Connection) Receive(ctx context.Context) {
 			}
 		}
 
-		atomic.AddInt64(&c.numInflight, 1) // one more in flight
+		c.numInflight.Add(1) // one more in flight
 		if req.flags&CMDT_CHECK_NOT_READ_ONLY != 0 && c.export.readonly {
 			req.nbdRep.NbdError = NBD_EPERM
 			select {
@@ -388,7 +388,7 @@ func (c *Connection) Receive(ctx context.Context) {
 		}
 		// if we've recieved a disconnect, just sit waiting for the
 		// context to indicate we've done
-		if atomic.LoadInt64(&c.disconnectReceived) > 0 {
+		if c.disconnectReceived.Load() {
 			select {
 			case <-ctx.Done():
 				return
@@ -527,7 +527,7 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 func (c *Connection) waitForInflight(ctx context.Context, limit int64) {
 	c.logger.InfoContext(ctx, "Waiting for inflight requests prior to disconnect", "limit", limit)
 	for {
-		if atomic.LoadInt64(&c.numInflight) <= limit {
+		if c.numInflight.Load() <= limit {
 			return
 		}
 		// this is pretty nasty in that it would be nicer to wait on
@@ -581,7 +581,7 @@ func (c *Connection) Transmit(ctx context.Context) {
 				c.FreeMemory(ctx, req.reqData)
 			}
 			// TODO: with structured replies, only do this if the 'DONE' bit is set.
-			atomic.AddInt64(&c.numInflight, -1) // one less in flight
+			c.numInflight.Add(-1) // one less in flight
 		}
 	}
 }
