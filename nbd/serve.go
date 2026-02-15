@@ -3,7 +3,6 @@ package nbd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"os"
@@ -14,7 +13,8 @@ import (
 const defaultConnectionTimeout = 5 * time.Second
 
 type sessionConfig struct {
-	exports           []ExportOptions
+	resolveExport     ExportResolver
+	listExports       ExportLister
 	defaultExport     string
 	disableNoZeroes   bool
 	connectionTimeout time.Duration
@@ -26,36 +26,11 @@ func buildSessionConfig(opts Options) (*log.Logger, *sessionConfig, error) {
 		logger = log.New(os.Stderr, "gonbdserver:", log.LstdFlags)
 	}
 
-	if len(opts.Exports) == 0 {
-		return nil, nil, errors.New("nbd: no exports configured")
-	}
-
-	exports := make([]ExportOptions, len(opts.Exports))
-	copy(exports, opts.Exports)
-
-	names := make(map[string]struct{}, len(exports))
-	for i := range exports {
-		if exports[i].Name == "" {
-			return nil, nil, fmt.Errorf("nbd: export[%d] missing name", i)
-		}
-		if exports[i].OpenBackend == nil {
-			return nil, nil, fmt.Errorf("nbd: export[%d] %q missing OpenBackend", i, exports[i].Name)
-		}
-		if _, ok := names[exports[i].Name]; ok {
-			return nil, nil, fmt.Errorf("nbd: duplicate export name %q", exports[i].Name)
-		}
-		names[exports[i].Name] = struct{}{}
+	if opts.ResolveExport == nil {
+		return nil, nil, errors.New("nbd: ResolveExport is required")
 	}
 
 	defaultExport := opts.DefaultExport
-	if defaultExport == "" && len(exports) == 1 {
-		defaultExport = exports[0].Name
-	}
-	if defaultExport != "" {
-		if _, ok := names[defaultExport]; !ok {
-			return nil, nil, fmt.Errorf("nbd: default export %q not found", defaultExport)
-		}
-	}
 
 	ct := opts.ConnectionTimeout
 	if ct == 0 {
@@ -63,7 +38,8 @@ func buildSessionConfig(opts Options) (*log.Logger, *sessionConfig, error) {
 	}
 
 	return logger, &sessionConfig{
-		exports:           exports,
+		resolveExport:     opts.ResolveExport,
+		listExports:       opts.ListExports,
 		defaultExport:     defaultExport,
 		disableNoZeroes:   opts.DisableNoZeroes,
 		connectionTimeout: ct,

@@ -26,13 +26,22 @@ func main() {
 
 	opts := nbd.Options{
 		Logger: log.Default(),
-		Exports: []nbd.ExportOptions{
-			{
+		ResolveExport: func(ctx context.Context, name string) (*nbd.ExportOptions, error) {
+			_ = ctx
+			if name != "foo" {
+				return nil, nbd.ErrNoSuchExport
+			}
+			return &nbd.ExportOptions{
 				Name: "foo",
 				OpenBackend: nbd.OpenFileBackend(nbd.FileBackendOptions{
 					Path: "/tmp/nbd.img",
 				}),
-			},
+			}, nil
+		},
+		ListExports: func(ctx context.Context, yield func(name string) bool) error {
+			_ = ctx
+			yield("foo")
+			return nil
 		},
 	}
 

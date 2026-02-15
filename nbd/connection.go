@@ -775,8 +775,26 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				}
 			}
 
+			if len(name) == 0 {
+				err := errors.New("No export name specified")
+				if opt.NbdOptId == NBD_OPT_EXPORT_NAME {
+					// we have to just abort here
+					return err
+				}
+				or := nbdOptReply{
+					NbdOptReplyMagic:  NBD_REP_MAGIC,
+					NbdOptId:          opt.NbdOptId,
+					NbdOptReplyType:   NBD_REP_ERR_UNKNOWN,
+					NbdOptReplyLength: 0,
+				}
+				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+					return errors.New("Cannot send info error")
+				}
+				break
+			}
+
 			// Next find our export
-			ec, err := c.getExportConfig(ctx, string(name))
+			ec, err := c.resolveExport(ctx, string(name))
 			if err != nil {
 				if opt.NbdOptId == NBD_OPT_EXPORT_NAME {
 					// we have to just abort here
@@ -937,25 +955,52 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 			done = true
 
 		case NBD_OPT_LIST:
-			for _, e := range c.cfg.exports {
-				name := []byte(e.Name)
+			if c.cfg == nil || c.cfg.listExports == nil {
+				or := nbdOptReply{
+					NbdOptReplyMagic:  NBD_REP_MAGIC,
+					NbdOptId:          opt.NbdOptId,
+					NbdOptReplyType:   NBD_REP_ERR_UNSUP,
+					NbdOptReplyLength: 0,
+				}
+				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
+					return errors.New("Cannot reply to unsupported list option")
+				}
+				break
+			}
+
+			var listWriteErr error
+			if err := c.cfg.listExports(ctx, func(name string) bool {
+				if name == "" {
+					return true
+				}
+				b := []byte(name)
 				or := nbdOptReply{
 					NbdOptReplyMagic:  NBD_REP_MAGIC,
 					NbdOptId:          opt.NbdOptId,
 					NbdOptReplyType:   NBD_REP_SERVER,
-					NbdOptReplyLength: uint32(len(name) + 4),
+					NbdOptReplyLength: uint32(len(b) + 4),
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot send list item")
+					listWriteErr = errors.New("Cannot send list item")
+					return false
 				}
-				l := uint32(len(name))
+				l := uint32(len(b))
 				if err := binary.Write(c.conn, binary.BigEndian, l); err != nil {
-					return errors.New("Cannot send list name length")
+					listWriteErr = errors.New("Cannot send list name length")
+					return false
 				}
-				if n, err := c.conn.Write(name); err != nil || n != len(name) {
-					return errors.New("Cannot send list name")
+				if n, err := c.conn.Write(b); err != nil || n != len(b) {
+					listWriteErr = errors.New("Cannot send list name")
+					return false
 				}
+				return true
+			}); err != nil {
+				return err
 			}
+			if listWriteErr != nil {
+				return listWriteErr
+			}
+
 			or := nbdOptReply{
 				NbdOptReplyMagic:  NBD_REP_MAGIC,
 				NbdOptId:          opt.NbdOptId,
@@ -998,15 +1043,29 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 	return nil
 }
 
-// getExport generates an export for a given name
-func (c *Connection) getExportConfig(ctx context.Context, name string) (*ExportOptions, error) {
-	_ = ctx
-	for i := range c.cfg.exports {
-		if c.cfg.exports[i].Name == name {
-			return &c.cfg.exports[i], nil
-		}
+func (c *Connection) resolveExport(ctx context.Context, name string) (*ExportOptions, error) {
+	if c.cfg == nil || c.cfg.resolveExport == nil {
+		return nil, errors.New("No export resolver configured")
 	}
-	return nil, errors.New("no such export")
+	ec, err := c.cfg.resolveExport(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if ec == nil {
+		return nil, ErrNoSuchExport
+	}
+	if ec.Name == "" {
+		// Don't mutate shared state returned by the user.
+		x := *ec
+		x.Name = name
+		ec = &x
+	} else if ec.Name != name {
+		return nil, fmt.Errorf("Resolver returned export %q for name %q", ec.Name, name)
+	}
+	if ec.OpenBackend == nil {
+		return nil, fmt.Errorf("Export %q has no backend", name)
+	}
+	return ec, nil
 }
 
 // round a uint64 up to the next power of two

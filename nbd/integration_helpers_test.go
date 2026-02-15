@@ -54,12 +54,21 @@ func StartNbd(t *testing.T, tc TestConfig) *NbdInstance {
 	}
 
 	opts := Options{
-		Exports: []ExportOptions{
-			{
+		ResolveExport: func(ctx context.Context, name string) (*ExportOptions, error) {
+			_ = ctx
+			if name != "foo" {
+				return nil, ErrNoSuchExport
+			}
+			return &ExportOptions{
 				Name:        "foo",
 				OpenBackend: OpenFileBackend(FileBackendOptions{Path: img}),
 				Workers:     20,
-			},
+			}, nil
+		},
+		ListExports: func(ctx context.Context, yield func(name string) bool) error {
+			_ = ctx
+			yield("foo")
+			return nil
 		},
 	}
 	ni.ln = ln
