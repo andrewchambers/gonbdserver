@@ -3,7 +3,7 @@ package nbd
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -12,7 +12,7 @@ var ErrNoSuchExport = errors.New("nbd: no such export")
 // Options configures serving NBD connections.
 type Options struct {
 	// Logger is used for all server logs. If nil, a default logger is created.
-	Logger *log.Logger
+	Logger *slog.Logger
 
 	// ResolveExport is called during negotiation to look up the export by name.
 	//

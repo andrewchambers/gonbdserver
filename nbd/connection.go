@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -27,7 +27,7 @@ type Connection struct {
 	params             *ConnectionParameters // parameters
 	conn               net.Conn              // the connection that is used as the NBD transport
 	plainConn          net.Conn              // the unencrypted (original) connection
-	logger             *log.Logger           // a logger
+	logger             *slog.Logger          // a logger
 	cfg                *sessionConfig        // immutable configuration for this connection
 	export             *Export               // a pointer to the export
 	backend            Backend               // the backend implementation
@@ -56,9 +56,9 @@ type Backend interface {
 	TrimAt(ctx context.Context, length int, offset int64) (int, error)          // trim
 	Flush(ctx context.Context) error                                            // flush
 	Close(ctx context.Context) error                                            // close
-	Geometry(ctx context.Context) (uint64, uint64, uint64, uint64, error)       // size, minimum BS, preferred BS, maximum BS
-	HasFua(ctx context.Context) bool                                            // does the driver support FUA?
-	HasFlush(ctx context.Context) bool                                          // does the driver support flush?
+	Geometry(ctx context.Context) (Geometry, error)
+	HasFua(ctx context.Context) bool   // does the driver support FUA?
+	HasFlush(ctx context.Context) bool // does the driver support flush?
 }
 
 // Details of an export
@@ -87,7 +87,10 @@ type Request struct {
 }
 
 // newConection returns a new Connection object
-func newConnection(cfg *sessionConfig, logger *log.Logger, conn net.Conn) (*Connection, error) {
+func newConnection(cfg *sessionConfig, logger *slog.Logger, conn net.Conn) (*Connection, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	timeout := defaultConnectionTimeout
 	if cfg != nil && cfg.connectionTimeout > 0 {
 		timeout = cfg.connectionTimeout
@@ -143,7 +146,7 @@ func (c *Connection) GetMemory(ctx context.Context, length uint64) [][]byte {
 			return nil
 		case m, ok = <-c.memBlockCh:
 			if !ok {
-				c.logger.Printf("[ERROR] Memory channel failed")
+				c.logger.ErrorContext(ctx, "Memory channel closed")
 				c.memBlocksMutex.Unlock()
 				return nil
 			}
@@ -157,7 +160,7 @@ func (c *Connection) GetMemory(ctx context.Context, length uint64) [][]byte {
 				select {
 				case m, ok = <-c.memBlockCh:
 					if !ok {
-						c.logger.Printf("[ERROR] Memory channel failed")
+						c.logger.ErrorContext(ctx, "Memory channel closed")
 						return nil
 					}
 				case <-ctx.Done():
@@ -211,8 +214,12 @@ func (c *Connection) ZeroMemory(ctx context.Context, mem [][]byte) {
 func (c *Connection) ReturnMemory(ctx context.Context) {
 	defer func() {
 		c.memBlocksMutex.Lock()
-		c.logger.Printf("[INFO] ReturnMemory exiting for %s alloc=%d free=%d LWM=%d", c.name, c.memBlocksAllocated, len(c.memBlockCh), c.memBlocksFreeLWM)
+		alloc := c.memBlocksAllocated
+		free := len(c.memBlockCh)
+		lwm := c.memBlocksFreeLWM
 		c.memBlocksMutex.Unlock()
+
+		c.logger.DebugContext(ctx, "ReturnMemory exiting", "alloc", alloc, "free", free, "lwm", lwm)
 		c.Kill(ctx)
 		c.wg.Done()
 	}()
@@ -226,7 +233,6 @@ func (c *Connection) ReturnMemory(ctx context.Context) {
 			if freeBlocks < c.memBlocksFreeLWM {
 				c.memBlocksFreeLWM = freeBlocks
 			}
-			//c.logger.Printf("[DEBUG] Return memory for %s alloc=%d free=%d LWM=%d", c.name, c.memBlocksAllocated, freeBlocks, c.memBlocksFreeLWM)
 		returnloop:
 			for n := 0; n < c.memBlocksFreeLWM; n++ {
 				select {
@@ -248,7 +254,7 @@ func (c *Connection) ReturnMemory(ctx context.Context) {
 // Receive is the goroutine that handles decoding conncetion data from the socket
 func (c *Connection) Receive(ctx context.Context) {
 	defer func() {
-		c.logger.Printf("[INFO] Receiver exiting for %s", c.name)
+		c.logger.DebugContext(ctx, "Receiver exiting")
 		c.Kill(ctx)
 		c.wg.Done()
 	}()
@@ -257,7 +263,7 @@ func (c *Connection) Receive(ctx context.Context) {
 		if err := binary.Read(c.conn, binary.BigEndian, &req.nbdReq); err != nil {
 			if nerr, ok := err.(net.Error); ok {
 				if nerr.Timeout() {
-					c.logger.Printf("[INFO] Client %s timeout, closing connection", c.name)
+					c.logger.InfoContext(ctx, "Client timeout, closing connection")
 					return
 				}
 			}
@@ -266,15 +272,15 @@ func (c *Connection) Receive(ctx context.Context) {
 				return
 			}
 			if err == io.EOF {
-				c.logger.Printf("[WARN] Client %s closed connection abruptly", c.name)
+				c.logger.WarnContext(ctx, "Client closed connection abruptly")
 			} else {
-				c.logger.Printf("[ERROR] Client %s could not read request: %s", c.name, err)
+				c.logger.ErrorContext(ctx, "Client could not read request", "err", err)
 			}
 			return
 		}
 
 		if req.nbdReq.NbdRequestMagic != NBD_REQUEST_MAGIC {
-			c.logger.Printf("[ERROR] Client %s had bad magic number in request", c.name)
+			c.logger.ErrorContext(ctx, "Bad request magic", "magic", req.nbdReq.NbdRequestMagic)
 			return
 		}
 
@@ -287,7 +293,7 @@ func (c *Connection) Receive(ctx context.Context) {
 		cmd := req.nbdReq.NbdCommandType
 		var ok bool
 		if req.flags, ok = CmdTypeMap[int(cmd)]; !ok {
-			c.logger.Printf("[ERROR] Client %s unknown command %d", c.name, cmd)
+			c.logger.ErrorContext(ctx, "Unknown command", "cmd", cmd)
 			return
 		}
 
@@ -302,11 +308,17 @@ func (c *Connection) Receive(ctx context.Context) {
 			req.length = uint64(req.nbdReq.NbdLength)
 			req.offset = req.nbdReq.NbdOffset
 			if req.length <= 0 || req.length+req.offset > c.export.size {
-				c.logger.Printf("[ERROR] Client %s gave bad offset or length", c.name)
+				c.logger.ErrorContext(ctx, "Invalid offset/length", "offset", req.offset, "length", req.length, "size", c.export.size)
 				return
 			}
 			if req.length&(c.export.minimumBlockSize-1) != 0 || req.offset&(c.export.minimumBlockSize-1) != 0 || req.length > c.export.maximumBlockSize {
-				c.logger.Printf("[ERROR] Client %s gave offset or length outside blocksize paramaters cmd=%d (len=%08x,off=%08x,minbs=%08x,maxbs=%08x)", c.name, req.nbdReq.NbdCommandType, req.length, req.offset, c.export.minimumBlockSize, c.export.maximumBlockSize)
+				c.logger.ErrorContext(ctx, "Offset/length outside block size constraints",
+					"cmd", req.nbdReq.NbdCommandType,
+					"offset", req.offset,
+					"length", req.length,
+					"min_block_size", c.export.minimumBlockSize,
+					"max_block_size", c.export.maximumBlockSize,
+				)
 				return
 			}
 		}
@@ -317,7 +329,7 @@ func (c *Connection) Receive(ctx context.Context) {
 				return
 			}
 			if req.length <= 0 {
-				c.logger.Printf("[ERROR] Client %s gave bad length", c.name)
+				c.logger.ErrorContext(ctx, "Invalid length", "length", req.length)
 				return
 			}
 			length := req.length
@@ -333,12 +345,12 @@ func (c *Connection) Receive(ctx context.Context) {
 						return
 					}
 
-					c.logger.Printf("[ERROR] Client %s cannot read data to write: %s", c.name, err)
+					c.logger.ErrorContext(ctx, "Cannot read write payload", "err", err)
 					return
 				}
 
 				if uint64(n) != blocklen {
-					c.logger.Printf("[ERROR] Client %s cannot read all data to write: %d != %d", c.name, n, blocklen)
+					c.logger.ErrorContext(ctx, "Short read of write payload", "got", n, "want", blocklen)
 					return
 
 				}
@@ -399,13 +411,12 @@ func checkpoint(t *time.Time) time.Duration {
 // one of these is run for each worker
 func (c *Connection) Dispatch(ctx context.Context, n int) {
 	defer func() {
-		c.logger.Printf("[INFO] Dispatcher %d exiting for %s", n, c.name)
+		c.logger.InfoContext(ctx, "Dispatcher exiting", "worker", n)
 		c.Kill(ctx)
 		c.wg.Done()
 	}()
 	//t := time.Now()
 	for {
-		//c.logger.Printf("[DEBUG] Client %s dispatcher %d waiting latency %s", c.name, n, checkpoint(&t))
 		select {
 		case <-ctx.Done():
 			return
@@ -413,7 +424,6 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 			if !ok {
 				return
 			}
-			//c.logger.Printf("[DEBUG] Client %s dispatcher %d command %d latency %s", c.name, n, req.nbdReq.NbdCommandType, checkpoint(&t))
 			fua := req.nbdReq.NbdCommandFlags&NBD_CMD_FLAG_FUA != 0
 
 			addr := req.offset
@@ -428,12 +438,12 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 					n, err := c.backend.ReadAt(ctx, req.repData[i][:blocklen], int64(addr))
 					if err != nil {
 						c.ZeroMemory(ctx, req.repData[i:])
-						c.logger.Printf("[WARN] Client %s got read I/O error: %s", c.name, err)
+						c.logger.WarnContext(ctx, "Read I/O error", "err", err, "offset", addr, "length", blocklen)
 						req.nbdRep.NbdError = NbdError(err)
 						break
 					} else if uint64(n) != blocklen {
 						c.ZeroMemory(ctx, req.repData[i:])
-						c.logger.Printf("[WARN] Client %s got incomplete read (%d != %d) at offset %d", c.name, n, length, addr)
+						c.logger.WarnContext(ctx, "Short read", "got", n, "want", blocklen, "offset", addr)
 						req.nbdRep.NbdError = NBD_EIO
 						break
 					}
@@ -448,11 +458,11 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 					}
 					n, err := c.backend.WriteAt(ctx, req.reqData[i][:blocklen], int64(addr), fua)
 					if err != nil {
-						c.logger.Printf("[WARN] Client %s got write I/O error: %s", c.name, err)
+						c.logger.WarnContext(ctx, "Write I/O error", "err", err, "offset", addr, "length", blocklen, "fua", fua)
 						req.nbdRep.NbdError = NbdError(err)
 						break
 					} else if uint64(n) != blocklen {
-						c.logger.Printf("[WARN] Client %s got incomplete write (%d != %d) at offset %d", c.name, n, length, addr)
+						c.logger.WarnContext(ctx, "Short write", "got", n, "want", blocklen, "offset", addr, "fua", fua)
 						req.nbdRep.NbdError = NBD_EIO
 						break
 					}
@@ -461,7 +471,7 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 				}
 			case NBD_CMD_FLUSH:
 				if err := c.backend.Flush(ctx); err != nil {
-					c.logger.Printf("[WARN] Client %s got flush I/O error: %s", c.name, err)
+					c.logger.WarnContext(ctx, "Flush I/O error", "err", err)
 					req.nbdRep.NbdError = NbdError(err)
 					break
 				}
@@ -474,12 +484,12 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 					n, err := c.backend.TrimAt(ctx, int(req.length), int64(addr))
 					if err != nil {
 						c.ZeroMemory(ctx, req.repData[i:])
-						c.logger.Printf("[WARN] Client %s got trim I/O error: %s", c.name, err)
+						c.logger.WarnContext(ctx, "Trim I/O error", "err", err, "offset", addr, "length", blocklen)
 						req.nbdRep.NbdError = NbdError(err)
 						break
 					} else if uint64(n) != blocklen {
 						c.ZeroMemory(ctx, req.repData[i:])
-						c.logger.Printf("[WARN] Client %s got incomplete trim (%d != %d) at offset %d", c.name, n, length, addr)
+						c.logger.WarnContext(ctx, "Short trim", "got", n, "want", blocklen, "offset", addr)
 						req.nbdRep.NbdError = NBD_EIO
 						break
 					}
@@ -489,21 +499,21 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 			case NBD_CMD_DISC:
 				c.waitForInflight(ctx, 1) // this request is itself in flight, so 1 is permissible
 				c.backend.Flush(ctx)
-				c.logger.Printf("[INFO] Client %s requested disconnect", c.name)
+				c.logger.InfoContext(ctx, "Client requested disconnect")
 				return
 			case NBD_CMD_CLOSE:
 				c.waitForInflight(ctx, 1) // this request is itself in flight, so 1 is permissible
 				c.backend.Flush(ctx)
-				c.logger.Printf("[INFO] Client %s requested close", c.name)
+				c.logger.InfoContext(ctx, "Client requested close")
 				select {
 				case c.txCh <- req:
 				case <-ctx.Done():
 				}
 				c.waitForInflight(ctx, 0) // wait for this request to be no longer inflight (i.e. reply transmitted)
-				c.logger.Printf("[INFO] Client %s close completed", c.name)
+				c.logger.InfoContext(ctx, "Client close completed")
 				return
 			default:
-				c.logger.Printf("[ERROR] Client %s sent unknown command %d", c.name, req.nbdReq.NbdCommandType)
+				c.logger.ErrorContext(ctx, "Client sent unknown command", "cmd", req.nbdReq.NbdCommandType)
 				return
 			}
 			select {
@@ -516,7 +526,7 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 }
 
 func (c *Connection) waitForInflight(ctx context.Context, limit int64) {
-	c.logger.Printf("[INFO] Client %s waiting for inflight requests prior to disconnect", c.name)
+	c.logger.InfoContext(ctx, "Waiting for inflight requests prior to disconnect", "limit", limit)
 	for {
 		if atomic.LoadInt64(&c.numInflight) <= limit {
 			return
@@ -532,7 +542,7 @@ func (c *Connection) waitForInflight(ctx context.Context, limit int64) {
 // Transmit is the goroutine run to transmit the processed requests (now replies)
 func (c *Connection) Transmit(ctx context.Context) {
 	defer func() {
-		c.logger.Printf("[INFO] Transmitter exiting for %s", c.name)
+		c.logger.InfoContext(ctx, "Transmitter exiting")
 		c.Kill(ctx)
 		c.wg.Done()
 	}()
@@ -545,7 +555,7 @@ func (c *Connection) Transmit(ctx context.Context) {
 				return
 			}
 			if err := binary.Write(c.conn, binary.BigEndian, req.nbdRep); err != nil {
-				c.logger.Printf("[ERROR] Client %s cannot write reply", c.name)
+				c.logger.ErrorContext(ctx, "Cannot write reply", "err", err)
 				return
 			}
 			if req.flags&CMDT_REP_PAYLOAD != 0 && req.repData != nil {
@@ -555,8 +565,11 @@ func (c *Connection) Transmit(ctx context.Context) {
 					if blocklen > length {
 						blocklen = length
 					}
-					if n, err := c.conn.Write(req.repData[i][:blocklen]); err != nil || uint64(n) != blocklen {
-						c.logger.Printf("[ERROR] Client %s cannot write reply", c.name)
+					if n, err := c.conn.Write(req.repData[i][:blocklen]); err != nil {
+						c.logger.ErrorContext(ctx, "Cannot write reply", "err", err)
+						return
+					} else if uint64(n) != blocklen {
+						c.logger.ErrorContext(ctx, "Short write of reply", "got", n, "want", blocklen)
 						return
 					}
 					length -= blocklen
@@ -590,6 +603,7 @@ func (c *Connection) Serve(parentCtx context.Context) error {
 	if c.name == "" {
 		c.name = "[unknown]"
 	}
+	c.logger = c.logger.With("remote", c.name)
 
 	defer func() {
 		if c.backend != nil {
@@ -615,18 +629,18 @@ func (c *Connection) Serve(parentCtx context.Context) error {
 			}
 			close(c.memBlockCh)
 		}
-		c.logger.Printf("[INFO] Closed connection from %s", c.name)
+		c.logger.InfoContext(ctx, "Closed connection")
 	}()
 
 	if err := c.Negotiate(ctx); err != nil {
-		c.logger.Printf("[INFO] Negotiation failed with %s: %v", c.name, err)
+		c.logger.InfoContext(ctx, "Negotiation failed", "err", err)
 		return err
 	}
 
 	c.memBlocksMaximum = int64(((c.export.maximumBlockSize + c.export.memoryBlockSize - 1) / c.export.memoryBlockSize) * 2)
 	c.memBlockCh = make(chan []byte, c.memBlocksMaximum+1)
 
-	c.name = c.name + "/" + c.export.name
+	c.logger = c.logger.With("export", c.export.name)
 
 	workers := c.export.workers
 
@@ -634,7 +648,7 @@ func (c *Connection) Serve(parentCtx context.Context) error {
 		workers = DefaultWorkers
 	}
 
-	c.logger.Printf("[INFO] Negotiation succeeded with %s, serving with %d worker(s)", c.name, workers)
+	c.logger.InfoContext(ctx, "Negotiation succeeded", "workers", workers)
 
 	c.wg.Add(3)
 	go c.Receive(ctx)
@@ -649,9 +663,9 @@ func (c *Connection) Serve(parentCtx context.Context) error {
 	// workers dies
 	select {
 	case <-c.killCh:
-		c.logger.Printf("[INFO] Worker forced close for %s", c.name)
+		c.logger.InfoContext(ctx, "Worker forced close")
 	case <-ctx.Done():
-		c.logger.Printf("[INFO] Parent forced close for %s", c.name)
+		c.logger.InfoContext(ctx, "Parent forced close")
 	}
 
 	return nil
@@ -820,7 +834,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				if opt.NbdOptId == NBD_OPT_EXPORT_NAME {
 					return err
 				}
-				c.logger.Printf("[INFO] Could not connect client %s to %s: %v", c.name, string(name), err)
+				c.logger.InfoContext(ctx, "Could not connect client to export", "export", string(name), "err", err)
 				or := nbdOptReply{
 					NbdOptReplyMagic:  NBD_REP_MAGIC,
 					NbdOptId:          opt.NbdOptId,
@@ -1091,11 +1105,15 @@ func (c *Connection) connectExport(ctx context.Context, ec *ExportOptions) (*Exp
 		return nil, err
 	}
 
-	size, minimumBlockSize, preferredBlockSize, maximumBlockSize, err := backend.Geometry(ctx)
+	geom, err := backend.Geometry(ctx)
 	if err != nil {
 		_ = backend.Close(ctx)
 		return nil, err
 	}
+	size := geom.Size
+	minimumBlockSize := geom.MinimumBlockSize
+	preferredBlockSize := geom.PreferredBlockSize
+	maximumBlockSize := geom.MaximumBlockSize
 
 	if c.backend != nil {
 		_ = c.backend.Close(ctx)

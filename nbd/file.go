@@ -44,9 +44,13 @@ func (fb *FileBackend) Close(ctx context.Context) error {
 	return fb.file.Close()
 }
 
-// Size implements Backend.Size
-func (fb *FileBackend) Geometry(ctx context.Context) (uint64, uint64, uint64, uint64, error) {
-	return fb.size, 1, 32 * 1024, 128 * 1024 * 1024, nil
+func (fb *FileBackend) Geometry(ctx context.Context) (Geometry, error) {
+	return Geometry{
+		Size:               fb.size,
+		MinimumBlockSize:   1,
+		PreferredBlockSize: 32 * 1024,
+		MaximumBlockSize:   128 * 1024 * 1024,
+	}, nil
 }
 
 // Size implements Backend.HasFua

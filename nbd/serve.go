@@ -3,7 +3,7 @@ package nbd
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -20,10 +20,10 @@ type sessionConfig struct {
 	connectionTimeout time.Duration
 }
 
-func buildSessionConfig(opts Options) (*log.Logger, *sessionConfig, error) {
+func buildSessionConfig(opts Options) (*slog.Logger, *sessionConfig, error) {
 	logger := opts.Logger
 	if logger == nil {
-		logger = log.New(os.Stderr, "gonbdserver:", log.LstdFlags)
+		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{}))
 	}
 
 	if opts.ResolveExport == nil {
@@ -92,8 +92,8 @@ func ServeListener(ctx context.Context, ln net.Listener, opts Options) error {
 	}()
 
 	addr := ln.Addr().Network() + ":" + ln.Addr().String()
-	logger.Printf("[INFO] Starting listening on %s", addr)
-	defer logger.Printf("[INFO] Stopping listening on %s", addr)
+	logger.InfoContext(ctx, "Starting listener", "listener", addr)
+	defer logger.InfoContext(ctx, "Stopping listener", "listener", addr)
 
 	for {
 		conn, err := ln.Accept()
@@ -110,7 +110,7 @@ func ServeListener(ctx context.Context, ln net.Listener, opts Options) error {
 			return err
 		}
 
-		logger.Printf("[INFO] Connect to %s from %s", addr, conn.RemoteAddr())
+		logger.InfoContext(ctx, "Accepted connection", "listener", addr, "remote", conn.RemoteAddr().String())
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -119,7 +119,7 @@ func ServeListener(ctx context.Context, ln net.Listener, opts Options) error {
 	}
 }
 
-func serveConnWithConfig(ctx context.Context, conn net.Conn, cfg *sessionConfig, logger *log.Logger) error {
+func serveConnWithConfig(ctx context.Context, conn net.Conn, cfg *sessionConfig, logger *slog.Logger) error {
 	c, err := newConnection(cfg, logger, conn)
 	if err != nil {
 		_ = conn.Close()

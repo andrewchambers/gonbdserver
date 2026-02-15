@@ -12,7 +12,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net"
 
 	"github.com/andrewchambers/gonbdserver/nbd"
@@ -25,7 +25,7 @@ func main() {
 	}
 
 	opts := nbd.Options{
-		Logger: log.Default(),
+		Logger: slog.Default(),
 		ResolveExport: func(ctx context.Context, name string) (*nbd.ExportOptions, error) {
 			_ = ctx
 			if name != "foo" {
