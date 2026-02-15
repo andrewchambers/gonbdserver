@@ -3,24 +3,13 @@ package nbd
 import (
 	"context"
 	"log"
-	"net"
 	"time"
 )
 
-// Options configures a Server.
+// Options configures serving NBD connections.
 type Options struct {
 	// Logger is used for all server logs. If nil, a default logger is created.
 	Logger *log.Logger
-
-	Listeners []ListenerOptions
-}
-
-// ListenerOptions configures a single listening address.
-type ListenerOptions struct {
-	// Listener is an already-bound listener (e.g. from net.Listen).
-	//
-	// The Server owns this listener and will Close it when the server is closed.
-	Listener net.Listener
 
 	Exports       []ExportOptions
 	DefaultExport string

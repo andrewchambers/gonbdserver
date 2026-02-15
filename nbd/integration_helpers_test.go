@@ -25,7 +25,7 @@ type NbdInstance struct {
 	serveErrCh  chan error
 	closed      bool
 	closedMutex sync.Mutex
-	srv         *Server
+	ln          net.Listener
 	TestConfig
 }
 
@@ -53,53 +53,32 @@ func StartNbd(t *testing.T, tc TestConfig) *NbdInstance {
 		t.Fatalf("net.Listen(unix): %v", err)
 	}
 
-	srv, err := NewServer(Options{
-		Listeners: []ListenerOptions{
+	opts := Options{
+		Exports: []ExportOptions{
 			{
-				Listener: ln,
-				Exports: []ExportOptions{
-					{
-						Name:        "foo",
-						OpenBackend: OpenFileBackend(FileBackendOptions{Path: img}),
-						Workers:     20,
-					},
-				},
+				Name:        "foo",
+				OpenBackend: OpenFileBackend(FileBackendOptions{Path: img}),
+				Workers:     20,
 			},
 		},
-	})
-	if err != nil {
-		_ = ln.Close()
-		t.Fatalf("NewServer: %v", err)
 	}
-	ni.srv = srv
+	ni.ln = ln
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ni.cancel = cancel
 	go func() {
 		defer close(ni.done)
-		ni.serveErrCh <- ni.srv.Serve(ctx)
+		ni.serveErrCh <- ServeListener(ctx, ln, opts)
 	}()
 
-	// Catch immediate listen failures with a clear error, instead of timing out later.
-	deadline := time.Now().Add(2 * time.Second)
-	ready := false
-	for time.Now().Before(deadline) {
-		select {
-		case err := <-ni.serveErrCh:
-			if err == nil || errors.Is(err, context.Canceled) {
-				t.Fatalf("server exited unexpectedly: %v", err)
-			}
-			t.Fatalf("server exited: %v", err)
-		default:
+	// Catch immediate startup errors.
+	select {
+	case err := <-ni.serveErrCh:
+		if err == nil || errors.Is(err, context.Canceled) {
+			t.Fatalf("server exited unexpectedly: %v", err)
 		}
-		if _, err := os.Stat(sock); err == nil {
-			ready = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !ready {
-		t.Fatalf("timed out waiting for unix socket %q", sock)
+		t.Fatalf("server exited: %v", err)
+	case <-time.After(25 * time.Millisecond):
 	}
 
 	return ni
@@ -114,8 +93,8 @@ func (ni *NbdInstance) CloseConnection() {
 	if ni.cancel != nil {
 		ni.cancel()
 	}
-	if ni.srv != nil {
-		_ = ni.srv.Close()
+	if ni.ln != nil {
+		_ = ni.ln.Close()
 	}
 	ni.closed = true
 }

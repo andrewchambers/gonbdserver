@@ -2,8 +2,8 @@
 
 `gonbdserver/nbd` is a small NBD server library in Go.
 
-It aims to be easy to embed: you create a `nbd.Server` with `nbd.Options` and
-call `Serve` with a context.
+It aims to be easy to embed: you accept connections and call `nbd.ServeConn`,
+or use `nbd.ServeListener` as a convenience accept loop.
 
 ## Example
 
@@ -24,30 +24,22 @@ func main() {
 		panic(err)
 	}
 
-	srv, err := nbd.NewServer(nbd.Options{
+	opts := nbd.Options{
 		Logger: log.Default(),
-		Listeners: []nbd.ListenerOptions{
+		Exports: []nbd.ExportOptions{
 			{
-				Listener: ln,
-				Exports: []nbd.ExportOptions{
-					{
-						Name: "foo",
-						OpenBackend: nbd.OpenFileBackend(nbd.FileBackendOptions{
-							Path: "/tmp/nbd.img",
-						}),
-					},
-				},
+				Name: "foo",
+				OpenBackend: nbd.OpenFileBackend(nbd.FileBackendOptions{
+					Path: "/tmp/nbd.img",
+				}),
 			},
 		},
-	})
-	if err != nil {
-		panic(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := srv.Serve(ctx); err != nil {
+	if err := nbd.ServeListener(ctx, ln, opts); err != nil {
 		panic(err)
 	}
 }

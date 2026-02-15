@@ -28,7 +28,7 @@ type Connection struct {
 	conn               net.Conn              // the connection that is used as the NBD transport
 	plainConn          net.Conn              // the unencrypted (original) connection
 	logger             *log.Logger           // a logger
-	listener           *listener             // the listener that invoked us
+	cfg                *sessionConfig        // immutable configuration for this connection
 	export             *Export               // a pointer to the export
 	backend            Backend               // the backend implementation
 	wg                 sync.WaitGroup        // a waitgroup for the session; we mark this as done on exit
@@ -87,15 +87,15 @@ type Request struct {
 }
 
 // newConection returns a new Connection object
-func newConnection(listener *listener, logger *log.Logger, conn net.Conn) (*Connection, error) {
-	timeout := listener.connectionTimeout
-	if timeout <= 0 {
-		timeout = defaultConnectionTimeout
+func newConnection(cfg *sessionConfig, logger *log.Logger, conn net.Conn) (*Connection, error) {
+	timeout := defaultConnectionTimeout
+	if cfg != nil && cfg.connectionTimeout > 0 {
+		timeout = cfg.connectionTimeout
 	}
 	params := &ConnectionParameters{ConnectionTimeout: timeout}
 	c := &Connection{
 		plainConn: conn,
-		listener:  listener,
+		cfg:       cfg,
 		logger:    logger,
 		params:    params,
 	}
@@ -574,8 +574,11 @@ func (c *Connection) Transmit(ctx context.Context) {
 	}
 }
 
-// Serve negotiates, then starts all the goroutines for processing a connection, then waits for them to be ended
-func (c *Connection) Serve(parentCtx context.Context) {
+// Serve negotiates, then starts all the goroutines for processing a connection,
+// then waits for them to be ended.
+//
+// It returns a non-nil error only if negotiation fails.
+func (c *Connection) Serve(parentCtx context.Context) error {
 	ctx, cancelFunc := context.WithCancel(parentCtx)
 
 	c.rxCh = make(chan Request, 1024)
@@ -617,7 +620,7 @@ func (c *Connection) Serve(parentCtx context.Context) {
 
 	if err := c.Negotiate(ctx); err != nil {
 		c.logger.Printf("[INFO] Negotiation failed with %s: %v", c.name, err)
-		return
+		return err
 	}
 
 	c.memBlocksMaximum = int64(((c.export.maximumBlockSize + c.export.memoryBlockSize - 1) / c.export.memoryBlockSize) * 2)
@@ -650,6 +653,8 @@ func (c *Connection) Serve(parentCtx context.Context) {
 	case <-ctx.Done():
 		c.logger.Printf("[INFO] Parent forced close for %s", c.name)
 	}
+
+	return nil
 }
 
 // skip bytes
@@ -681,7 +686,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 		NbdGlobalFlags: NBD_FLAG_FIXED_NEWSTYLE,
 	}
 
-	if !c.listener.disableNoZeroes {
+	if c.cfg == nil || !c.cfg.disableNoZeroes {
 		nsh.NbdGlobalFlags |= NBD_FLAG_NO_ZEROES
 	}
 
@@ -765,7 +770,9 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 			}
 
 			if len(name) == 0 {
-				name = []byte(c.listener.defaultExport)
+				if c.cfg != nil {
+					name = []byte(c.cfg.defaultExport)
+				}
 			}
 
 			// Next find our export
@@ -930,7 +937,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 			done = true
 
 		case NBD_OPT_LIST:
-			for _, e := range c.listener.exports {
+			for _, e := range c.cfg.exports {
 				name := []byte(e.Name)
 				or := nbdOptReply{
 					NbdOptReplyMagic:  NBD_REP_MAGIC,
@@ -994,9 +1001,9 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 // getExport generates an export for a given name
 func (c *Connection) getExportConfig(ctx context.Context, name string) (*ExportOptions, error) {
 	_ = ctx
-	for i := range c.listener.exports {
-		if c.listener.exports[i].Name == name {
-			return &c.listener.exports[i], nil
+	for i := range c.cfg.exports {
+		if c.cfg.exports[i].Name == name {
+			return &c.cfg.exports[i], nil
 		}
 	}
 	return nil, errors.New("no such export")
