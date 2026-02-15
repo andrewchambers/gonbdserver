@@ -3,7 +3,6 @@ module github.com/andrewchambers/gonbdserver
 go 1.25.4
 
 require (
-	github.com/mattn/go-isatty v0.0.20
 	github.com/sevlyar/go-daemon v0.1.6
 	golang.org/x/net v0.50.0
 	gopkg.in/yaml.v2 v2.4.0

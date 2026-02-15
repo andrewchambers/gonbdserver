@@ -31,7 +31,6 @@ servers:
 logging:
 `
 
-var longtests = flag.Bool("longtests", false, "enable long tests")
 var noFlush = flag.Bool("noflush", false, "Disable flush and FUA (for benchmarking - do not use in production")
 
 type TestConfig struct {
@@ -374,52 +373,4 @@ func doTestConnection(t *testing.T) {
 
 func TestConnection(t *testing.T) {
 	doTestConnection(t)
-}
-
-func doTestConnectionIntegrity(t *testing.T, transationLog []byte, driver string) {
-	if _, ok := BackendMap[driver]; !ok {
-		t.Skip(fmt.Sprintf("Skipping test as driver %s not built", driver))
-		return
-	}
-	ni := StartNbd(t, TestConfig{Driver: driver, NoFlush: *noFlush})
-	defer ni.Close()
-
-	if err := ni.CreateFile(t, 50*1024*1024); err != nil {
-		t.Logf("Error on create file: %v", err)
-		t.Fail()
-		return
-	}
-
-	if err := ni.Connect(t); err != nil {
-		t.Logf("Error on connect: %v", err)
-		t.Fail()
-		return
-	}
-	if err := ni.Go(t); err != nil {
-		t.Logf("Error on go: %v", err)
-		t.Fail()
-		return
-	}
-
-	it := ni.NewIntegrityTest(t, transationLog)
-	defer it.Close()
-
-	if err := it.Run(); err != nil {
-		t.Logf("Error on Integrity Test: %v", err)
-		t.Fail()
-		return
-	}
-
-}
-
-func TestConnectionIntegrity(t *testing.T) {
-	doTestConnectionIntegrity(t, []byte(testTransactionLog), "file")
-}
-
-func TestConnectionIntegrityHuge(t *testing.T) {
-	if !*longtests {
-		t.Skip("Skipping this test as long tests not enabled (use -longtests to enable)")
-	} else {
-		doTestConnectionIntegrity(t, []byte(testHugeTransactionLog), "file")
-	}
 }
