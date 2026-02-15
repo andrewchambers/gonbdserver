@@ -1,4 +1,4 @@
-# gonbdserver [![Build Status](https://travis-ci.org/abligh/gonbdserver.svg?branch=master)](https://travis-ci.org/abligh/gonbdserver) [![GoDoc](http://godoc.org/github.com/abligh/gonbdserver?status.png)](http://godoc.org/github.com/abligh/gonbdserver/nbd) [![GitHub release](https://img.shields.io/github/release/abligh/gonbdserver.svg)](https://github.com/abligh/gonbdserver/releases)
+# gonbdserver [![Build Status](https://travis-ci.org/andrewchambers/gonbdserver.svg?branch=master)](https://travis-ci.org/andrewchambers/gonbdserver) [![GoDoc](http://godoc.org/github.com/andrewchambers/gonbdserver?status.png)](http://godoc.org/github.com/andrewchambers/gonbdserver/nbd) [![GitHub release](https://img.shields.io/github/release/andrewchambers/gonbdserver.svg)](https://github.com/andrewchambers/gonbdserver/releases)
 
 `gonbdserver` is an NBD server written in Go. Its purpose is not to
 be especially performant, but rather to act as a simple demonstration
@@ -15,13 +15,8 @@ Features
   
 * **TLS support**. With client certificates if required.
 
-* **Ceph RBD support**. Almost entirely untested.
-
-* **Linux AIO support**. Experimental.
-
-* **Pluggable backends**. By default a file backend is provided, as well as
-  a Ceph/RBD backend on linux, but it would be possible to supply any backend.
-  The ceph driver is there mostly to illustrate just how easy this is.
+* **Pluggable backends**. By default a file backend is provided, but it would be
+  possible to supply any backend.
 
 * **Reloadable configuration**. It is possible to reload the configuration
   using `SIGHUP` without affecting existing servers.
@@ -95,8 +90,8 @@ servers:
     workers: 4                   # Use 4 workers
   - name: bar                    # The second export is called 'bar'
     readonly: true               # This is readonly
-    driver: rbd                  # And uses the (currently imaginary) rbd driver
-    image: rbdbar                # on this rados block device name
+    driver: file                 # And uses the file driver
+    path: /tmp/bar               # on this file
     tlsonly: true                # require TLS on this device
   tls:                           # use the following certificates
     keyfile: /path/to/server-key.pem
@@ -157,20 +152,6 @@ The `file` driver reads the disk from a file on the host OS's disks. It has the 
 
 * `path:` path to the file. Mandatory.
 * `sync:` set to `true` to open the file with `O_SYNC`, else to `false`. Optional, defaults to `false`.
-
-The `aiofile` driver reads the disk from a file on the host OS's disks using AIO (available on Linux only). This driver is experimental; do not use it in production. It has the following options:
-
-* `path:` path to the file. Mandatory.
-* `sync:` set to `true` to open the file with `O_SYNC`, else to `false`. Optional, defaults to `false`.
-
-The `rbd` driver reads the disk from Ceph. It relies on your `ceph.conf` file being set up correctly, and has the following options:
-
-* `image:` RBD name of image. Mandatory.
-* `pool:` RBD pool for image. Optional, defaults to `rbd`.
-* `cluster:` ceph cluster name. Defaults to `ceph`.
-* `user:` ceph user name. Defaults to `client.admin`.
-
-*Note the Ceph driver is almost entirely untested*
 
 #### `tls` item
 

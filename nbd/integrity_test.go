@@ -414,7 +414,7 @@ errs:
 		}
 	}
 
-	it.ni.t.Logf(stats)
+	it.ni.t.Log(stats)
 
 	return nil
 }

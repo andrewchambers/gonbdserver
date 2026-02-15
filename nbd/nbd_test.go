@@ -30,10 +30,6 @@ servers:
     flush: false
     fua: false
 {{end}}
-  - name: bar
-    driver: rbd
-    readonly: false
-    image: rbdbar
 {{if .Tls}}
   tls:
     keyfile: {{.TempDir}}/server-key.pem
@@ -312,7 +308,7 @@ listloop:
 			return fmt.Errorf("List option reply type was unexpected")
 		}
 	}
-	if exports != 2 {
+	if exports != 1 {
 		return fmt.Errorf("Unexpected number of exports")
 	}
 
@@ -544,29 +540,5 @@ func TestConnectionIntegrityHugeTls(t *testing.T) {
 		t.Skip("Skipping this test as long tests not enabled (use -longtests to enable)")
 	} else {
 		doTestConnectionIntegrity(t, []byte(testHugeTransactionLog), true, "file")
-	}
-}
-
-func TestAioConnectionIntegrity(t *testing.T) {
-	doTestConnectionIntegrity(t, []byte(testTransactionLog), false, "aiofile")
-}
-
-func TestAioConnectionIntegrityTls(t *testing.T) {
-	doTestConnectionIntegrity(t, []byte(testTransactionLog), true, "aiofile")
-}
-
-func TestAioConnectionIntegrityHuge(t *testing.T) {
-	if !*longtests {
-		t.Skip("Skipping this test as long tests not enabled (use -longtests to enable)")
-	} else {
-		doTestConnectionIntegrity(t, []byte(testHugeTransactionLog), false, "aiofile")
-	}
-}
-
-func TestAioConnectionIntegrityHugeTls(t *testing.T) {
-	if !*longtests {
-		t.Skip("Skipping this test as long tests not enabled (use -longtests to enable)")
-	} else {
-		doTestConnectionIntegrity(t, []byte(testHugeTransactionLog), true, "aiofile")
 	}
 }
