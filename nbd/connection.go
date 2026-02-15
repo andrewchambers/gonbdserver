@@ -704,14 +704,14 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 	}
 
 	if err := binary.Write(c.conn, binary.BigEndian, nsh); err != nil {
-		return errors.New("Cannot write magic header")
+		return fmt.Errorf("Cannot write magic header: %w", err)
 	}
 
 	// next they send client flags
 	var clf nbdClientFlags
 
 	if err := binary.Read(c.conn, binary.BigEndian, &clf); err != nil {
-		return errors.New("Cannot read client flags")
+		return fmt.Errorf("Cannot read client flags: %w", err)
 	}
 
 	done := false
@@ -719,7 +719,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 	for !done {
 		var opt nbdClientOpt
 		if err := binary.Read(c.conn, binary.BigEndian, &opt); err != nil {
-			return errors.New("Cannot read option (perhaps client dropped the connection)")
+			return fmt.Errorf("Cannot read option (perhaps client dropped the connection): %w", err)
 		}
 		if opt.NbdOptMagic != NBD_OPTS_MAGIC {
 			return errors.New("Bad option magic")
@@ -745,7 +745,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 			} else {
 				var nameLength uint32
 				if err := binary.Read(c.conn, binary.BigEndian, &nameLength); err != nil {
-					return errors.New("Bad export name length")
+					return fmt.Errorf("Bad export name length: %w", err)
 				}
 				if nameLength > 4096 {
 					return errors.New("Name is too long")
@@ -760,12 +760,12 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				}
 				var numInfoElements uint16
 				if err := binary.Read(c.conn, binary.BigEndian, &numInfoElements); err != nil {
-					return errors.New("Bad number of info elements")
+					return fmt.Errorf("Bad number of info elements: %w", err)
 				}
 				for i := uint16(0); i < numInfoElements; i++ {
 					var infoElement uint16
 					if err := binary.Read(c.conn, binary.BigEndian, &infoElement); err != nil {
-						return errors.New("Bad number of info elements")
+						return fmt.Errorf("Bad number of info elements: %w", err)
 					}
 					switch infoElement {
 					case NBD_INFO_BLOCK_SIZE:
@@ -801,7 +801,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyLength: 0,
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot send info error")
+					return fmt.Errorf("Cannot send info error: %w", err)
 				}
 				break
 			}
@@ -820,7 +820,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyLength: 0,
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot send info error")
+					return fmt.Errorf("Cannot send info error: %w", err)
 				}
 				break
 			}
@@ -841,7 +841,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyLength: 0,
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot send info error")
+					return fmt.Errorf("Cannot send info error: %w", err)
 				}
 				break
 			}
@@ -857,7 +857,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdExportFlags: export.exportFlags,
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, ed); err != nil {
-					return errors.New("Cannot write export details")
+					return fmt.Errorf("Cannot write export details: %w", err)
 				}
 			} else {
 				// Send NBD_INFO_EXPORT
@@ -868,7 +868,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyLength: 12,
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot write info export pt1")
+					return fmt.Errorf("Cannot write info export pt1: %w", err)
 				}
 				ir := nbdInfoExport{
 					NbdInfoType:          NBD_INFO_EXPORT,
@@ -876,7 +876,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdTransmissionFlags: export.exportFlags,
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, ir); err != nil {
-					return errors.New("Cannot write info export pt2")
+					return fmt.Errorf("Cannot write info export pt2: %w", err)
 				}
 
 				// Send NBD_INFO_NAME
@@ -887,13 +887,13 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyLength: uint32(2 + len(name)),
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot write info name pt1")
+					return fmt.Errorf("Cannot write info name pt1: %w", err)
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, uint16(NBD_INFO_NAME)); err != nil {
-					return errors.New("Cannot write name id")
+					return fmt.Errorf("Cannot write name id: %w", err)
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, name); err != nil {
-					return errors.New("Cannot write name")
+					return fmt.Errorf("Cannot write name: %w", err)
 				}
 
 				// Send NBD_INFO_DESCRIPTION
@@ -904,13 +904,13 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyLength: uint32(2 + len(description)),
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot write info description pt1")
+					return fmt.Errorf("Cannot write info description pt1: %w", err)
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, uint16(NBD_INFO_DESCRIPTION)); err != nil {
-					return errors.New("Cannot write description id")
+					return fmt.Errorf("Cannot write description id: %w", err)
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, description); err != nil {
-					return errors.New("Cannot write description")
+					return fmt.Errorf("Cannot write description: %w", err)
 				}
 
 				// Send NBD_INFO_BLOCK_SIZE
@@ -921,7 +921,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyLength: 14,
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot write info block size pt1")
+					return fmt.Errorf("Cannot write info block size pt1: %w", err)
 				}
 				ir2 := nbdInfoBlockSize{
 					NbdInfoType:           NBD_INFO_BLOCK_SIZE,
@@ -930,7 +930,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdMaximumBlockSize:   uint32(export.maximumBlockSize),
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, ir2); err != nil {
-					return errors.New("Cannot write info block size pt2")
+					return fmt.Errorf("Cannot write info block size pt2: %w", err)
 				}
 
 				replyType := NBD_REP_ACK
@@ -947,7 +947,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyLength: 0,
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot info ack")
+					return fmt.Errorf("Cannot info ack: %w", err)
 				}
 				if opt.NbdOptId == NBD_OPT_INFO || or.NbdOptReplyType&NBD_REP_FLAG_ERROR != 0 {
 					// Disassociate the backend as we are not closing
@@ -961,7 +961,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				// send 124 bytes of zeroes.
 				zeroes := make([]byte, 124, 124)
 				if err := binary.Write(c.conn, binary.BigEndian, zeroes); err != nil {
-					return errors.New("Cannot write zeroes")
+					return fmt.Errorf("Cannot write zeroes: %w", err)
 				}
 			}
 			c.export = export
@@ -976,7 +976,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyLength: 0,
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					return errors.New("Cannot reply to unsupported list option")
+					return fmt.Errorf("Cannot reply to unsupported list option: %w", err)
 				}
 				break
 			}
@@ -994,16 +994,19 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 					NbdOptReplyLength: uint32(len(b) + 4),
 				}
 				if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-					listWriteErr = errors.New("Cannot send list item")
+					listWriteErr = fmt.Errorf("Cannot send list item: %w", err)
 					return false
 				}
 				l := uint32(len(b))
 				if err := binary.Write(c.conn, binary.BigEndian, l); err != nil {
-					listWriteErr = errors.New("Cannot send list name length")
+					listWriteErr = fmt.Errorf("Cannot send list name length: %w", err)
 					return false
 				}
-				if n, err := c.conn.Write(b); err != nil || n != len(b) {
-					listWriteErr = errors.New("Cannot send list name")
+				if n, err := c.conn.Write(b); err != nil {
+					listWriteErr = fmt.Errorf("Cannot send list name: %w", err)
+					return false
+				} else if n != len(b) {
+					listWriteErr = fmt.Errorf("Cannot send list name: short write (%d != %d)", n, len(b))
 					return false
 				}
 				return true
@@ -1021,7 +1024,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				NbdOptReplyLength: 0,
 			}
 			if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-				return errors.New("Cannot send list ack")
+				return fmt.Errorf("Cannot send list ack: %w", err)
 			}
 		case NBD_OPT_ABORT:
 			or := nbdOptReply{
@@ -1031,7 +1034,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				NbdOptReplyLength: 0,
 			}
 			if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-				return errors.New("Cannot send abort ack")
+				return fmt.Errorf("Cannot send abort ack: %w", err)
 			}
 			return errors.New("Connection aborted by client")
 		default:
@@ -1047,7 +1050,7 @@ func (c *Connection) Negotiate(ctx context.Context) error {
 				NbdOptReplyLength: 0,
 			}
 			if err := binary.Write(c.conn, binary.BigEndian, or); err != nil {
-				return errors.New("Cannot reply to unsupported option")
+				return fmt.Errorf("Cannot reply to unsupported option: %w", err)
 			}
 		}
 	}
