@@ -3,6 +3,7 @@ package nbd
 import (
 	"context"
 	"log"
+	"net"
 	"time"
 )
 
@@ -16,13 +17,10 @@ type Options struct {
 
 // ListenerOptions configures a single listening address.
 type ListenerOptions struct {
-	// Network and Address are passed to net.Listen(Network, Address).
+	// Listener is an already-bound listener (e.g. from net.Listen).
 	//
-	// Common values:
-	// - Network: "unix", Address: "/tmp/nbd.sock"
-	// - Network: "tcp",  Address: "127.0.0.1:10809"
-	Network string
-	Address string
+	// The Server owns this listener and will Close it when the server is closed.
+	Listener net.Listener
 
 	Exports       []ExportOptions
 	DefaultExport string

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"sync"
 )
@@ -66,20 +65,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	listeners := append([]*listener(nil), s.listeners...)
 	s.mu.Unlock()
 
-	started := make([]*listener, 0, len(listeners))
 	for _, l := range listeners {
-		nl, err := net.Listen(l.network, l.addr)
-		if err != nil {
-			cancel()
-			for _, sl := range started {
-				_ = sl.close()
-			}
-			s.wg.Wait()
-			return err
-		}
-		l.nl = nl
-		started = append(started, l)
-
 		s.wg.Add(1)
 		go l.acceptLoop(ctx, &s.wg)
 	}

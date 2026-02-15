@@ -13,17 +13,22 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 
 	"github.com/andrewchambers/gonbdserver/nbd"
 )
 
 func main() {
+	ln, err := net.Listen("unix", "/tmp/nbd.sock")
+	if err != nil {
+		panic(err)
+	}
+
 	srv, err := nbd.NewServer(nbd.Options{
 		Logger: log.Default(),
 		Listeners: []nbd.ListenerOptions{
 			{
-				Network: "unix",
-				Address: "/tmp/nbd.sock",
+				Listener: ln,
 				Exports: []nbd.ExportOptions{
 					{
 						Name: "foo",

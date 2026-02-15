@@ -6,6 +6,7 @@ package nbd
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -47,11 +48,15 @@ func StartNbd(t *testing.T, tc TestConfig) *NbdInstance {
 	sock := filepath.Join(ni.TempDir, "nbd.sock")
 	img := filepath.Join(ni.TempDir, "nbd.img")
 
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("net.Listen(unix): %v", err)
+	}
+
 	srv, err := NewServer(Options{
 		Listeners: []ListenerOptions{
 			{
-				Network: "unix",
-				Address: sock,
+				Listener: ln,
 				Exports: []ExportOptions{
 					{
 						Name:        "foo",
@@ -63,6 +68,7 @@ func StartNbd(t *testing.T, tc TestConfig) *NbdInstance {
 		},
 	})
 	if err != nil {
+		_ = ln.Close()
 		t.Fatalf("NewServer: %v", err)
 	}
 	ni.srv = srv

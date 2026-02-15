@@ -15,9 +15,7 @@ const defaultConnectionTimeout = 5 * time.Second
 type listener struct {
 	logger *log.Logger
 
-	network string
-	addr    string
-	nl      net.Listener
+	nl net.Listener
 
 	exports         []ExportOptions
 	defaultExport   string
@@ -27,11 +25,8 @@ type listener struct {
 }
 
 func newListener(logger *log.Logger, o ListenerOptions) (*listener, error) {
-	if o.Network == "" {
-		o.Network = "tcp"
-	}
-	if o.Address == "" {
-		return nil, errors.New("missing address")
+	if o.Listener == nil {
+		return nil, errors.New("missing listener")
 	}
 	if len(o.Exports) == 0 {
 		return nil, errors.New("no exports configured")
@@ -71,8 +66,7 @@ func newListener(logger *log.Logger, o ListenerOptions) (*listener, error) {
 
 	return &listener{
 		logger:            logger,
-		network:           o.Network,
-		addr:              o.Address,
+		nl:                o.Listener,
 		exports:           exports,
 		defaultExport:     defaultExport,
 		disableNoZeroes:   o.DisableNoZeroes,
@@ -90,7 +84,7 @@ func (l *listener) close() error {
 func (l *listener) acceptLoop(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	addr := l.network + ":" + l.addr
+	addr := l.nl.Addr().Network() + ":" + l.nl.Addr().String()
 	l.logger.Printf("[INFO] Starting listening on %s", addr)
 
 	defer func() {
