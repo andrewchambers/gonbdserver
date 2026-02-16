@@ -36,6 +36,7 @@ type Connection struct {
 	name               string                // the name of the connection for logging purposes
 	disconnectReceived atomic.Bool           // set once a disconnect/close request has been received
 	numInflight        atomic.Int64          // number of inflight requests
+	dispatchBarrier    sync.RWMutex          // serializes barrier requests while allowing parallel data I/O
 
 	memBlockCh         chan []byte // channel of memory blocks that are free
 	memBlocksMaximum   int64       // maximum blocks that may be allocated
@@ -405,6 +406,15 @@ func checkpoint(t *time.Time) time.Duration {
 	return d
 }
 
+func isBarrierCommand(cmd uint16) bool {
+	switch cmd {
+	case NBD_CMD_FLUSH, NBD_CMD_DISC, NBD_CMD_CLOSE:
+		return true
+	default:
+		return false
+	}
+}
+
 // Dispatch is the goroutine used to process received items, passing the reply to the transmit goroutine
 //
 // one of these is run for each worker
@@ -423,7 +433,16 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 			if !ok {
 				return
 			}
+			exclusive := isBarrierCommand(req.nbdReq.NbdCommandType)
+			if exclusive {
+				c.dispatchBarrier.Lock()
+			} else {
+				c.dispatchBarrier.RLock()
+			}
 			fua := req.nbdReq.NbdCommandFlags&NBD_CMD_FLAG_FUA != 0
+			sendReply := true
+			waitForCloseReply := false
+			terminate := false
 
 			addr := req.offset
 			length := req.length
@@ -499,25 +518,41 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 				c.waitForInflight(ctx, 1) // this request is itself in flight, so 1 is permissible
 				c.backend.Flush(ctx)
 				c.logger.InfoContext(ctx, "Client requested disconnect")
-				return
+				sendReply = false
+				terminate = true
 			case NBD_CMD_CLOSE:
 				c.waitForInflight(ctx, 1) // this request is itself in flight, so 1 is permissible
 				c.backend.Flush(ctx)
 				c.logger.InfoContext(ctx, "Client requested close")
+				waitForCloseReply = true
+				terminate = true
+			default:
+				c.logger.ErrorContext(ctx, "Client sent unknown command", "cmd", req.nbdReq.NbdCommandType)
+				sendReply = false
+				terminate = true
+			}
+			if sendReply {
 				select {
 				case c.txCh <- req:
 				case <-ctx.Done():
+					if exclusive {
+						c.dispatchBarrier.Unlock()
+					} else {
+						c.dispatchBarrier.RUnlock()
+					}
+					return
 				}
+			}
+			if exclusive {
+				c.dispatchBarrier.Unlock()
+			} else {
+				c.dispatchBarrier.RUnlock()
+			}
+			if waitForCloseReply {
 				c.waitForInflight(ctx, 0) // wait for this request to be no longer inflight (i.e. reply transmitted)
 				c.logger.InfoContext(ctx, "Client close completed")
-				return
-			default:
-				c.logger.ErrorContext(ctx, "Client sent unknown command", "cmd", req.nbdReq.NbdCommandType)
-				return
 			}
-			select {
-			case c.txCh <- req:
-			case <-ctx.Done():
+			if terminate {
 				return
 			}
 		}
