@@ -134,20 +134,23 @@ func TestDispatchFlushBarrier(t *testing.T) {
 
 	payload := make([]byte, 4096)
 	conn.rxCh <- Request{
-		nbdReq: nbdRequest{NbdCommandType: NBD_CMD_WRITE},
-		length: 4096,
-		offset: 0,
+		nbdReq:      nbdRequest{NbdCommandType: NBD_CMD_WRITE},
+		length:      4096,
+		offset:      0,
+		dispatchSeq: 1,
 		reqData: [][]byte{
 			payload,
 		},
 	}
 	conn.rxCh <- Request{
-		nbdReq: nbdRequest{NbdCommandType: NBD_CMD_FLUSH},
+		nbdReq:      nbdRequest{NbdCommandType: NBD_CMD_FLUSH},
+		dispatchSeq: 2,
 	}
 	conn.rxCh <- Request{
-		nbdReq: nbdRequest{NbdCommandType: NBD_CMD_WRITE},
-		length: 4096,
-		offset: 4096,
+		nbdReq:      nbdRequest{NbdCommandType: NBD_CMD_WRITE},
+		length:      4096,
+		offset:      4096,
+		dispatchSeq: 3,
 		reqData: [][]byte{
 			payload,
 		},

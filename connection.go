@@ -36,7 +36,12 @@ type Connection struct {
 	name               string                // the name of the connection for logging purposes
 	disconnectReceived atomic.Bool           // set once a disconnect/close request has been received
 	numInflight        atomic.Int64          // number of inflight requests
+	nextDispatchSeq    atomic.Uint64         // sequence for requests entering the dispatch queue
 	dispatchBarrier    sync.RWMutex          // serializes barrier requests while allowing parallel data I/O
+	dispatchOrderMutex sync.Mutex            // protects dispatchOrderNext and dispatchOrderCond
+	dispatchOrderCond  *sync.Cond            // coordinates lock acquisition in dispatch sequence order
+	dispatchOrderOnce  sync.Once             // initializes dispatchOrderCond
+	dispatchOrderNext  uint64                // next dispatch sequence allowed to acquire dispatchBarrier
 
 	memBlockCh         chan []byte // channel of memory blocks that are free
 	memBlocksMaximum   int64       // maximum blocks that may be allocated
@@ -77,13 +82,14 @@ type Export struct {
 
 // Request is an internal structure for propagating requests through the channels
 type Request struct {
-	nbdReq  nbdRequest // the request in nbd format
-	nbdRep  nbdReply   // the reply in nbd format
-	length  uint64     // the checked length
-	offset  uint64     // the checked offset
-	reqData [][]byte   // request data (e.g. for a write)
-	repData [][]byte   // reply data (e.g. for a read)
-	flags   uint64     // our internal flag structure characterizing the request
+	nbdReq      nbdRequest // the request in nbd format
+	nbdRep      nbdReply   // the reply in nbd format
+	length      uint64     // the checked length
+	offset      uint64     // the checked offset
+	reqData     [][]byte   // request data (e.g. for a write)
+	repData     [][]byte   // reply data (e.g. for a read)
+	flags       uint64     // our internal flag structure characterizing the request
+	dispatchSeq uint64     // sequence assigned to requests routed via rxCh
 }
 
 // newConection returns a new Connection object
@@ -381,6 +387,7 @@ func (c *Connection) Receive(ctx context.Context) {
 				return
 			}
 		} else {
+			req.dispatchSeq = c.nextDispatchSeq.Add(1)
 			select {
 			case c.rxCh <- req:
 			case <-ctx.Done():
@@ -415,6 +422,36 @@ func isBarrierCommand(cmd uint16) bool {
 	}
 }
 
+func (c *Connection) initDispatchOrdering() {
+	c.dispatchOrderOnce.Do(func() {
+		c.dispatchOrderCond = sync.NewCond(&c.dispatchOrderMutex)
+		c.dispatchOrderNext = 1
+	})
+}
+
+func (c *Connection) lockDispatchBarrier(cmd uint16, seq uint64) bool {
+	exclusive := isBarrierCommand(cmd)
+	if seq == 0 {
+		seq = c.nextDispatchSeq.Add(1)
+	}
+
+	c.initDispatchOrdering()
+	c.dispatchOrderMutex.Lock()
+	for seq != c.dispatchOrderNext {
+		c.dispatchOrderCond.Wait()
+	}
+	if exclusive {
+		c.dispatchBarrier.Lock()
+	} else {
+		c.dispatchBarrier.RLock()
+	}
+	c.dispatchOrderNext++
+	c.dispatchOrderCond.Broadcast()
+	c.dispatchOrderMutex.Unlock()
+
+	return exclusive
+}
+
 // Dispatch is the goroutine used to process received items, passing the reply to the transmit goroutine
 //
 // one of these is run for each worker
@@ -433,12 +470,7 @@ func (c *Connection) Dispatch(ctx context.Context, n int) {
 			if !ok {
 				return
 			}
-			exclusive := isBarrierCommand(req.nbdReq.NbdCommandType)
-			if exclusive {
-				c.dispatchBarrier.Lock()
-			} else {
-				c.dispatchBarrier.RLock()
-			}
+			exclusive := c.lockDispatchBarrier(req.nbdReq.NbdCommandType, req.dispatchSeq)
 			fua := req.nbdReq.NbdCommandFlags&NBD_CMD_FLAG_FUA != 0
 			sendReply := true
 			waitForCloseReply := false
