@@ -1,6 +1,6 @@
 # gonbdserver
 
-`gonbdserver/nbd` is a small NBD server library in Go.
+`gonbdserver` is a small NBD server library in Go.
 
 It aims to be easy to embed: you accept connections and call `nbd.ServeConn`,
 or use `nbd.ServeListener` as a convenience accept loop.
@@ -15,7 +15,7 @@ import (
 	"log/slog"
 	"net"
 
-	"github.com/andrewchambers/gonbdserver/nbd"
+	nbd "github.com/andrewchambers/gonbdserver"
 )
 
 func main() {
@@ -56,9 +56,12 @@ func main() {
 
 ## Tests
 
-Kernel-level integration tests are behind the `integration` build tag and
-require Linux plus root privileges (via `sudo -n`) to run:
+Kernel-level integration tests run unprivileged, but require a small root helper
+daemon (`testd/cmd/testd`):
 
 ```bash
-go test -tags=integration ./...
+go build -o /tmp/gonbdserver-testd ./testd/cmd/testd
+sudo /tmp/gonbdserver-testd
+
+go test ./...
 ```
